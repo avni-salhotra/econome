@@ -1,27 +1,47 @@
-# Virtual environment
-adk-env/
-venv/
-env/
+# Google Cloud Credentials
+speech-credentials.json
+gemini-credentials.json
+*.json
 
 # Python
 __pycache__/
-*.pyc
-*.pyo
-*.pyd
+*.py[cod]
+*$py.class
+*.so
 .Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Credentials
-*.json
-.env
-credentials.json
+# Virtual Environment
+venv/
+adk-env/
+env/
+ENV/
 
 # IDE
 .vscode/
 .idea/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+Thumbs.db
 
-# Logs
-*.log
-
-# Dependencies
-node_modules/
+# Output files
+transcript_*.txt
+*.wav
+*.flac
