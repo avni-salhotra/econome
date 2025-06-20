@@ -74,50 +74,34 @@ class ProductionSTTServiceV2:
     
     def __init__(self, 
                  credentials_path: str = "speech-credentials.json",
-                 chunk_duration: float = 0.5,  # OPTIMIZED: 500ms for better accuracy
+                 chunk_duration: float = 0.5,
                  sample_rate: int = 16000,
                  project_id: str = "econome-hackathon"):
-        """
-        Initialize STT service
-        
-        Args:
-            credentials_path: Path to Google Cloud service account JSON
-            chunk_duration: Audio chunk duration in seconds (0.5s optimized for accuracy)
-            sample_rate: Audio sample rate (16000 for speech recognition)
-            project_id: Google Cloud project ID
-        """
-        
-        # Audio configuration
         self.sample_rate = sample_rate
         self.chunk_duration = chunk_duration
         self.chunk_size = int(sample_rate * chunk_duration)
         self.channels = 1
         self.dtype = np.float32
-        
-        # Service configuration
+
         self.project_id = project_id
-        self.max_queue_size = 20  # Reasonable buffer
-        
-        # Initialize Google Cloud Speech V2
+        self.max_queue_size = 10
+
         self._initialize_speech_client(credentials_path)
-        
-        # State management
+
         self._audio_queue = queue.Queue(maxsize=self.max_queue_size)
         self._is_recording = False
         self._session_start_time = None
         self._chunk_counter = 0
         self._segments = []
-        
-        # Threading
+
         self._recording_thread = None
         self._processing_thread = None
-        
-        # Callbacks for real-time events
+
         self._transcript_callback = None
         self._error_callback = None
         self._status_callback = None
-        
-        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=chirp_2)")
+
+        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=chirp_2, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
@@ -166,25 +150,21 @@ class ProductionSTTServiceV2:
         self._status_callback = callback
     
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
-        """Audio capture callback"""
         if status:
             print(f"⚠️ Audio status: {status}")
             if self._error_callback:
                 self._error_callback("audio_capture", Exception(f"Audio status: {status}"))
-        
+
         if self._is_recording:
             try:
-                # Add audio chunk to queue (non-blocking)
                 if not self._audio_queue.full():
                     self._audio_queue.put(indata.copy(), block=False)
                 else:
-                    # Queue full - remove oldest and add new
                     try:
                         self._audio_queue.get_nowait()
                         self._audio_queue.put(indata.copy(), block=False)
                     except queue.Empty:
                         pass
-                        
             except Exception as e:
                 if self._error_callback:
                     self._error_callback("audio_queue", e)
@@ -333,51 +313,46 @@ class ProductionSTTServiceV2:
         print(f"🎭 [MOCK] {speaker_id}: {text}")
     
     def start_recording(self) -> Dict[str, Any]:
-        """Start live audio recording and transcription"""
         if self._is_recording:
             return {
                 "success": False,
                 "message": "Already recording",
                 "is_recording": True
             }
-        
+
         try:
             print("🎤 Starting live audio recording...")
-            
-            # Reset state
+            self._clear_audio_buffers()
+
             self._chunk_counter = 0
             self._segments.clear()
-            
-            # Clear audio queue
+
             while not self._audio_queue.empty():
                 try:
                     self._audio_queue.get_nowait()
                 except queue.Empty:
                     break
-            
-            # Start recording
+
             self._is_recording = True
             self._session_start_time = time.time()
-            
-            # Start audio stream
+
             self._audio_stream = sd.InputStream(
                 samplerate=self.sample_rate,
                 channels=self.channels,
                 dtype=self.dtype,
                 callback=self._audio_callback,
-                blocksize=self.chunk_size
+                blocksize=self.chunk_size,
+                latency='low'
             )
             self._audio_stream.start()
-            
-            # Start processing thread
+
             self._processing_thread = threading.Thread(
                 target=self._process_audio_chunks,
                 daemon=True
             )
             self._processing_thread.start()
-            
+
             print("✅ Recording started successfully")
-            
             return {
                 "success": True,
                 "message": "Recording started",
@@ -386,15 +361,12 @@ class ProductionSTTServiceV2:
                 "chunk_duration": self.chunk_duration,
                 "has_credentials": self._has_credentials
             }
-            
         except Exception as e:
             self._is_recording = False
             error_msg = f"Failed to start recording: {e}"
             print(f"❌ {error_msg}")
-            
             if self._error_callback:
                 self._error_callback("start_recording", e)
-            
             return {
                 "success": False,
                 "message": error_msg,
@@ -402,36 +374,33 @@ class ProductionSTTServiceV2:
             }
     
     def stop_recording(self) -> Dict[str, Any]:
-        """Stop live audio recording"""
         if not self._is_recording:
             return {
                 "success": False,
                 "message": "Not currently recording",
                 "is_recording": False
             }
-        
+
         try:
             print("⏹️ Stopping recording...")
-            
-            # Stop recording
             self._is_recording = False
-            
-            # Stop audio stream
+
             if hasattr(self, '_audio_stream'):
-                self._audio_stream.stop()
-                self._audio_stream.close()
-            
-            # Wait for processing thread
+                try:
+                    self._audio_stream.stop()
+                    self._audio_stream.close()
+                except Exception as e:
+                    print(f"⚠️ Error stopping audio stream: {e}")
+
             if self._processing_thread and self._processing_thread.is_alive():
                 self._processing_thread.join(timeout=2.0)
-            
+
+            self._clear_audio_buffers()
+
             session_duration = time.time() - self._session_start_time if self._session_start_time else 0
-            
-            # Generate final transcript
             final_transcript = self._generate_final_transcript()
-            
+
             print("✅ Recording stopped successfully")
-            
             return {
                 "success": True,
                 "message": "Recording stopped",
@@ -442,19 +411,29 @@ class ProductionSTTServiceV2:
                 "speakers_detected": len(self._get_unique_speakers()),
                 "final_transcript": final_transcript
             }
-            
         except Exception as e:
             error_msg = f"Error stopping recording: {e}"
             print(f"❌ {error_msg}")
-            
             if self._error_callback:
                 self._error_callback("stop_recording", e)
-            
             return {
                 "success": False,
                 "message": error_msg,
                 "is_recording": False
             }
+
+    def _clear_audio_buffers(self):
+        try:
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+            self._chunk_counter = 0
+            self._segments.clear()
+            print("🧹 Audio buffers cleared")
+        except Exception as e:
+            print(f"⚠️ Error clearing buffers: {e}")
     
     def get_status(self) -> STTStatus:
         """Get current service status"""

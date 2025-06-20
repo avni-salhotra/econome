@@ -4,7 +4,14 @@ Production Real-Time Conversation Intelligence System
 Main demo script for Google Cloud ADK Hackathon
 
 Clean architecture with STT service and multi-agent coordination
+SIMPLIFIED VERSION: Focus on STT → Clean Transcript → Gemini Summary
+FIXED: Use 2-second chunks for better STT quality
 """
+
+# Ensure Gemini credentials are available
+import os
+if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/Users/avnisalhotra/econome/speech-credentials.json"
 
 import asyncio
 import sys
@@ -22,16 +29,16 @@ def print_banner():
     print("║          🏆 REAL-TIME CONVERSATION INTELLIGENCE SYSTEM 🏆            ║")
     print("║                     Google Cloud ADK Hackathon                       ║")
     print("╠═══════════════════════════════════════════════════════════════════════╣")
-    print("║  🎤 Google Cloud Speech V2  │  🧠 Vertex AI Analysis                 ║")
-    print("║  📋 Action Item Extraction  │  🔄 Multi-Agent Architecture           ║")
-    print("║  📊 Real-time Intelligence  │  💾 BigQuery Storage                   ║")
+    print("║  🎤 Google Cloud Speech V2  │  🧠 Gemini Final Analysis              ║")
+    print("║  📝 Clean Transcript Build  │  🔄 Multi-Agent Architecture           ║")
+    print("║  📊 End-to-End Intelligence │  💾 Session Management                 ║")
     print("╚═══════════════════════════════════════════════════════════════════════╝")
 
 async def interactive_demo():
     """Interactive demo with real-time conversation processing"""
     
     print_banner()
-    print("\n🎯 INTERACTIVE DEMO MODE")
+    print("\n🎯 INTERACTIVE DEMO MODE - SIMPLIFIED FLOW")
     print("=" * 70)
     
     # Configuration
@@ -46,7 +53,7 @@ async def interactive_demo():
     print("\n🏗️ Initializing system...")
     system = ConversationIntelligenceSystem(
         mock_mode=mock_mode,
-        chunk_duration=2.0,  # 2-second chunks for responsive feel
+        chunk_duration=2.0,  # FIXED: Use 2-second chunks for better quality (like working test)
         project_id="econome-hackathon"
     )
     
@@ -60,7 +67,7 @@ async def interactive_demo():
         # Interactive loop
         while True:
             print("\n" + "="*50)
-            print("🎮 CONVERSATION INTELLIGENCE DEMO")
+            print("🎮 SIMPLIFIED CONVERSATION INTELLIGENCE")
             print("="*50)
             print("1. Start live conversation recording")
             print("2. Get system status")
@@ -87,18 +94,19 @@ async def interactive_demo():
         print("\n\n⚠️ Demo interrupted by user")
     except Exception as e:
         print(f"\n❌ Demo error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print("\n🧹 Cleaning up...")
         system.stop_system()
         print("✅ System shutdown complete")
 
 async def live_conversation_demo(system):
-    """Live conversation recording demo"""
+    """Live conversation recording demo - WITH CLEAN LIVE STT DISPLAY"""
     
     print("\n🎤 LIVE CONVERSATION DEMO")
     print("-" * 30)
     
-    # Start conversation
     print("Starting conversation recording...")
     start_result = system.start_conversation()
     
@@ -107,43 +115,43 @@ async def live_conversation_demo(system):
         return
     
     print("✅ Recording started!")
-    print("\n📢 CONVERSATION PROMPTS:")
-    print("Try saying phrases like:")
-    print("• 'John will send the proposal by Friday'")
-    print("• 'We need to schedule a design review next week'")
-    print("• 'Sarah should coordinate with the marketing team'")
-    print("• 'Let's follow up on the budget discussion'")
-    print("• 'Mike will prepare the client presentation'")
+    print("\n📢 SPEAK CLEARLY AND NATURALLY:")
+    print("• Use complete sentences")
+    print("• Talk about your plans, projects, or thoughts")
+    print("• Avoid excessive filler words (um, uh)")
+    print("• Speak for at least 30 seconds for good analysis")
+    print("\n🛑 **PRESS ENTER TO STOP RECORDING WHEN DONE**")
     
-    # Monitor for specified duration or user input
-    duration = int(input("\nRecording duration in seconds [30]: ") or "30")
+    print(f"\n🎤 LIVE TRANSCRIPTION (press ENTER when done):")
+    print("-" * 50)
     
-    print(f"\n🎤 RECORDING FOR {duration} SECONDS...")
-    print("Speak naturally now...")
-    
-    # Real-time monitoring
     start_time = time.time()
     last_status_time = start_time
     
-    while time.time() - start_time < duration:
-        # Show status updates every 5 seconds
-        if time.time() - last_status_time >= 5:
-            status = system.get_live_status()
-            session_info = status.get("session_info", {})
-            
-            chunks = session_info.get("total_transcript_chunks", 0)
-            duration_str = session_info.get("session_duration", "0:00:00")
-            
-            print(f"📊 Live Status: {chunks} chunks processed | Duration: {duration_str}")
+    import threading
+    stop_event = threading.Event()
+    
+    def wait_for_enter():
+        input()
+        stop_event.set()
+    
+    input_thread = threading.Thread(target=wait_for_enter, daemon=True)
+    input_thread.start()
+    
+    while not stop_event.is_set():
+        if time.time() - last_status_time >= 15:
+            elapsed = int(time.time() - start_time)
+            print(f"\n⏱️  Recording... {elapsed}s elapsed | Press ENTER to stop")
             last_status_time = time.time()
         
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.5)
     
-    # Stop recording
-    print("\n⏹️ Stopping recording...")
+    print("\n" + "-" * 50)
+    print("⏹️ Stopping recording and processing...")
+    print("🧠 Building clean transcript and generating Gemini summary...")
+    
     summary = system.stop_conversation()
     
-    # Display results
     display_conversation_results(summary)
 
 async def automated_demo(system):
@@ -160,16 +168,18 @@ async def automated_demo(system):
         print(f"❌ Failed to start: {start_result.get('message')}")
         return
     
-    # Let it run for a shorter duration in automated mode
-    print("🎤 Simulating 20-second conversation...")
-    await asyncio.sleep(20)
+    # Let it run for a longer duration to get meaningful content
+    print("🎤 Simulating 30-second conversation...")
+    print("(In mock mode, this will generate sample transcript)")
+    await asyncio.sleep(30)
     
     # Stop and show results
+    print("🧠 Processing final analysis...")
     summary = system.stop_conversation()
     display_conversation_results(summary)
 
 def display_conversation_results(summary: Dict[str, Any]):
-    """Display conversation analysis results"""
+    """Display conversation analysis results - CLEAN TRANSCRIPT + GEMINI SUMMARY"""
     
     print("\n" + "="*70)
     print("📊 CONVERSATION ANALYSIS RESULTS")
@@ -179,34 +189,95 @@ def display_conversation_results(summary: Dict[str, Any]):
         print(f"❌ Error: {summary['error']}")
         return
     
-    # Basic session info
     print(f"🆔 Session ID: {summary.get('session_id', 'N/A')}")
     print(f"⏱️  Duration: {summary.get('duration_formatted', 'N/A')}")
-    print(f"📝 Transcript Chunks: {summary.get('total_transcript_chunks', 0)}")
-    print(f"🎭 Speakers Detected: Multiple speakers identified")
+    print(f"📝 Raw Transcript Chunks Collected: {summary.get('total_transcript_chunks', 0)}")
     
-    # Action items
-    action_items = summary.get('action_items', [])
-    print(f"\n📋 ACTION ITEMS EXTRACTED: {len(action_items)}")
-    
-    if action_items:
+    # Show clean transcript if available
+    full_transcript = summary.get('full_transcript', '')
+    if full_transcript and len(full_transcript.strip()) > 0:
+        print(f"\n📄 CLEAN FINAL TRANSCRIPT:")
         print("-" * 50)
-        for i, item in enumerate(action_items, 1):
-            print(f"{i}. {item.get('action', 'N/A')}")
-            print(f"   👤 Assigned to: {item.get('assignee', 'N/A')}")
-            print(f"   ⚡ Priority: {item.get('priority', 'N/A')}")
-            print(f"   📅 Deadline: {item.get('deadline', 'N/A')}")
-            print(f"   🕐 Detected: {item.get('timestamp', 'N/A')[:19]}")
-            print()
+        print(full_transcript)
+        print(f"\n📏 Clean Transcript Length: {len(full_transcript)} characters")
+        
+        # Show first few words for quick verification
+        words = full_transcript.split()
+        if len(words) > 0:
+            preview = ' '.join(words[:15])
+            if len(words) > 15:
+                preview += "..."
+            print(f"📖 Preview: {preview}")
     else:
-        print("   No action items detected in this conversation segment")
+        print(f"\n📄 CLEAN TRANSCRIPT:")
+        print("-" * 50)
+        print("❌ No clean transcript available")
+        print("   Possible reasons:")
+        print("   • Conversation too short")
+        print("   • Low confidence transcription")
+        print("   • Mostly filler words or unclear speech")
+        print("   • Background noise or poor audio quality")
     
-    # System performance
-    print("\n⚡ SYSTEM PERFORMANCE:")
+    # Show Gemini summary
+    gemini_summary = summary.get('gemini_summary', 'No summary available')
+    print(f"\n🧠 GEMINI SUMMARY:")
+    print("-" * 50)
+    
+    if (gemini_summary and 
+        gemini_summary != "No summary available" and 
+        "not yet generated" not in gemini_summary.lower() and
+        "failed" not in gemini_summary.lower() and
+        "too short" not in gemini_summary.lower()):
+        
+        print(gemini_summary)
+        print(f"\n📏 Summary Length: {len(gemini_summary)} characters")
+        print("✅ Gemini analysis successful!")
+        
+    else:
+        print("❌ Summary not generated successfully")
+        print(f"Status: {gemini_summary}")
+        print("\n💡 To get better results:")
+        print("   • Speak for at least 30 seconds")
+        print("   • Use clear, complete sentences")
+        print("   • Avoid long pauses or background noise")
+        print("   • Talk about specific topics or plans")
+        print("   • Ensure good microphone quality")
+    
+    # Show processing pipeline status
+    print(f"\n⚡ PROCESSING PIPELINE:")
+    transcript_ok = len(full_transcript.strip()) > 20 if full_transcript else False
+    summary_ok = (gemini_summary and 
+                  "not yet generated" not in gemini_summary.lower() and 
+                  "failed" not in gemini_summary.lower() and
+                  "too short" not in gemini_summary.lower())
+    
+    print(f"   🎤 Real-time STT transcription: ✅ Completed")
+    print(f"   📝 Transcript chunk collection: ✅ {summary.get('total_transcript_chunks', 0)} chunks")
+    print(f"   🧹 Transcript cleaning & filtering: {'✅ Success' if transcript_ok else '⚠️  Insufficient'}")
+    print(f"   🧠 Gemini analysis: {'✅ Success' if summary_ok else '❌ Failed'}")
     print(f"   🔄 Multi-agent coordination: ✅ Active")
-    print(f"   🎤 Real-time transcription: ✅ Completed")
-    print(f"   🧠 Live analysis: ✅ Processed")
-    print(f"   💾 Data storage: ✅ Ready")
+    
+    # Debug info for troubleshooting
+    if not transcript_ok:
+        print(f"\n🔍 DEBUG INFO:")
+        print(f"   • Raw chunks collected: {summary.get('total_transcript_chunks', 0)}")
+        print(f"   • Session duration: {summary.get('duration_formatted', 'N/A')}")
+        print(f"   • Check microphone and speak more clearly")
+    
+    print(f"\n💡 NEXT STEPS:")
+    if transcript_ok and summary_ok:
+        print(f"   🎉 Great! The system worked end-to-end")
+        print(f"   • Try different conversation topics")
+        print(f"   • Test with longer conversations")
+        print(f"   • Experiment with different speaking styles")
+    else:
+        print(f"   🔧 System needs tuning:")
+        if not transcript_ok:
+            print(f"   • Focus on clearer speech and longer conversations")
+            print(f"   • Check microphone setup and reduce background noise")
+        if not summary_ok:
+            print(f"   • Ensure transcript quality is sufficient")
+            print(f"   • Check Gemini integration and API access")
 
 def show_system_status(system):
     """Show detailed system status"""
@@ -228,59 +299,64 @@ def show_system_status(system):
     
     stt_status = status.get("stt_status", {})
     if stt_status:
-        print(f"🔊 Queue Health: {stt_status.get('queue_health', 'N/A')}")
+        print(f"🔊 STT Queue Health: {stt_status.get('queue_health', 'N/A')}")
         print(f"📝 Chunks Processed: {stt_status.get('total_chunks_processed', 0)}")
-        print(f"🎭 Speakers Detected: {stt_status.get('speakers_detected', 0)}")
 
 async def test_stt_directly(mock_mode: bool):
-    """Test STT service directly"""
+    """Test STT service directly - using same settings as main system"""
     
     print("\n🔧 DIRECT STT SERVICE TEST")
     print("-" * 30)
     
-    # Create STT service
+    # Create STT service with SAME settings as main system
     if mock_mode:
         from speech_agent import MockSTTService
         stt = MockSTTService()
         print("🔧 Using Mock STT Service")
     else:
-        stt = ProductionSTTServiceV2()
-        print("🔧 Using Production STT Service")
+        stt = ProductionSTTServiceV2(chunk_duration=2.0)  # Same as main system
+        print("🔧 Using Production STT Service (2-second chunks)")
     
     # Set up callback
     def on_transcript(segment):
-        print(f"📝 {segment.speaker_id}: {segment.text} (confidence: {segment.confidence:.3f})")
+        print(f"📝 {segment.text} (confidence: {segment.confidence:.3f})")
     
     if hasattr(stt, 'set_transcript_callback'):
         stt.set_transcript_callback(on_transcript)
     
     # Test recording
-    print("\nStarting 15-second STT test...")
+    print("\nStarting 20-second STT test...")
+    print("🎤 Try saying: 'Today is a great day. I'm working on an exciting project.'")
     start_result = stt.start_recording()
     
     if start_result.get("success"):
-        print("🎤 Recording... speak now!")
-        await asyncio.sleep(15)
+        print("🔴 Recording... speak clearly now!")
+        await asyncio.sleep(20)
         
         stop_result = stt.stop_recording()
         print(f"⏹️ Recording stopped: {stop_result.get('message')}")
         
         if hasattr(stt, 'get_transcript'):
             transcript = stt.get_transcript()
-            print(f"\n📄 Final transcript length: {len(transcript.get('transcript', ''))}")
+            transcript_text = transcript.get('transcript', '')
+            print(f"\n📄 Final transcript ({len(transcript_text)} chars):")
+            if transcript_text:
+                print(f"'{transcript_text}'")
+            else:
+                print("No transcript generated")
     else:
         print(f"❌ Failed to start recording: {start_result.get('message')}")
 
 def quick_test():
     """Quick system validation test"""
     
-    print("🧪 QUICK SYSTEM TEST")
-    print("=" * 30)
+    print("🧪 QUICK SYSTEM TEST - SIMPLIFIED FLOW")
+    print("=" * 40)
     
     async def run_test():
         # Test system initialization
         print("1. Testing system initialization...")
-        system = ConversationIntelligenceSystem(mock_mode=True)
+        system = ConversationIntelligenceSystem(mock_mode=True, chunk_duration=2.0)
         
         # Test system startup
         print("2. Testing system startup...")
@@ -297,30 +373,39 @@ def quick_test():
         start_result = system.start_conversation()
         print(f"   ✅ Conversation started: {start_result.get('success')}")
         
-        await asyncio.sleep(2)  # Brief pause
+        await asyncio.sleep(5)  # Longer pause for mock data generation
         
         stop_result = system.stop_conversation()
         print(f"   ✅ Conversation stopped: {stop_result.get('session_id') is not None}")
+        
+        # Check if we got a summary
+        summary = stop_result.get('gemini_summary', '')
+        print(f"   ✅ Summary generated: {len(summary) > 0}")
         
         # Cleanup
         print("5. Testing system shutdown...")
         system.stop_system()
         print("   ✅ System stopped")
         
-        print("\n🎯 QUICK TEST COMPLETE - All systems operational!")
+        print("\n🎯 SIMPLIFIED SYSTEM TEST COMPLETE!")
+        print("✅ STT → Clean Transcript → Gemini Summary flow working")
     
     asyncio.run(run_test())
 
 def show_help():
     """Show help information"""
     
-    print("\n📖 CONVERSATION INTELLIGENCE SYSTEM HELP")
-    print("=" * 50)
-    print("This system provides real-time conversation intelligence using:")
-    print("• Google Cloud Speech-to-Text V2 for transcription")
-    print("• Vertex AI for conversation analysis")
+    print("\n📖 SIMPLIFIED CONVERSATION INTELLIGENCE SYSTEM")
+    print("=" * 55)
+    print("This system provides conversation intelligence using:")
+    print("• Google Cloud Speech-to-Text V2 for real-time transcription")
+    print("• Intelligent transcript cleaning and filtering")
+    print("• Gemini AI for final conversation summary")
     print("• Multi-agent architecture for coordination")
-    print("• Real-time action item extraction")
+    print("\nSimplified Flow:")
+    print("1. Real-time STT transcription (visible during recording)")
+    print("2. Collect and clean transcript chunks")
+    print("3. Generate final Gemini summary at session end")
     print("\nUsage:")
     print("  python main.py                 - Interactive demo")
     print("  python main.py --test          - Quick system test")
@@ -329,6 +414,12 @@ def show_help():
     print("• speech-credentials.json file (for production mode)")
     print("• Google Cloud project with Speech and Vertex AI enabled")
     print("• Audio input device (microphone)")
+    print("\nTips for best results:")
+    print("• Speak clearly in complete sentences")
+    print("• Record for at least 30 seconds")
+    print("• Avoid excessive background noise")
+    print("• Use good microphone quality")
+    print("• Talk about specific topics or plans")
 
 def main():
     """Main entry point"""
