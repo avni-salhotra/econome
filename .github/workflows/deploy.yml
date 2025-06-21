@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [ main ]
 
+# Global permissions for security scanning
+permissions:
+  contents: read
+  security-events: write
+  actions: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -94,9 +100,18 @@ jobs:
     timeout-minutes: 15
     if: github.event_name == 'pull_request'
 
+    # Explicit permissions for this job
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        # Fetch full history for better CodeQL analysis
+        fetch-depth: 0
 
     - name: Check for secrets in code
       run: |
@@ -133,13 +148,27 @@ jobs:
 
         echo "✅ Security files properly excluded"
 
-    - name: Run CodeQL Analysis
+    - name: Initialize CodeQL
       uses: github/codeql-action/init@v3
       with:
         languages: python
+        # Use security-extended query suite for comprehensive scanning
+        queries: security-extended
+
+    - name: Set up Python for CodeQL
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: Install dependencies for CodeQL analysis
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
 
     - name: Autobuild
       uses: github/codeql-action/autobuild@v3
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
+      with:
+        category: "/language:python"
