@@ -12,6 +12,10 @@ gcp-credentials.json
 *.p12
 *.pem
 
+# DevOps secrets directory
+devops/secrets/
+devops/secrets/*
+
 # Environment Variables & Configuration
 .env
 .env.local

@@ -1,4 +1,4 @@
-name: Deploy to Google Cloud Run
+name: CI + Deploy: Main Branch Push
 
 on:
   push:
@@ -6,14 +6,14 @@ on:
   pull_request:
     branches: [ main ]
 
-env:
-  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
-  SERVICE_NAME: econome
-  REGION: us-central1
-
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      SERVICE_NAME: econome
+      REGION: us-central1
     
     steps:
     - name: Checkout code
@@ -37,7 +37,7 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
-    - name: Run tests in mock mode
+    - name: Run unit tests and functional validation
       run: |
         python -m pytest test_*.py -v || echo "No pytest found, running manual tests"
         python main.py --test
@@ -50,10 +50,16 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
+  # Deploy job only triggers on main branch pushes
   deploy:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      SERVICE_NAME: econome
+      REGION: us-central1
     
     steps:
     - name: Checkout code
@@ -81,7 +87,7 @@ jobs:
 
     - name: Build and deploy to Cloud Run
       run: |
-        gcloud builds submit --config cloudbuild.yaml .
+        gcloud builds submit --config devops/cloudbuild-prod.yaml .
 
     - name: Get service URL
       id: get-url
@@ -98,6 +104,7 @@ jobs:
 
   security-scan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     if: github.event_name == 'pull_request'
     
     steps:
