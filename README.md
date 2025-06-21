@@ -37,25 +37,43 @@ python run.py
 
 ## 🏗️ Architecture Overview
 
+### **System Architecture**
 ```mermaid
 graph TB
-    A[Web UI] --> B[FastAPI + WebSockets]
+    U[Users] --> F[Frontend UI<br/>Cloud Run]
+    F --> B[Backend API<br/>Cloud Run + WebSockets]
     B --> C[Multi-Agent System]
     C --> D[Google Cloud Speech V2]
     C --> E[Gemini AI - Parallel Processing]
-    C --> F[Session Manager]
-    
+    C --> S[Session Manager]
+
     D --> G[Real-time Transcription]
     E --> H[Summary Generation]
     E --> I[Action Item Extraction]
-    F --> J[Ephemeral Storage - 24h TTL]
-    
-    style A fill:#e1f5fe
+    S --> J[Ephemeral Storage - 24h TTL]
+
+    B --> SM[Google Secrets Manager]
+
+    style F fill:#e1f5fe
     style B fill:#f3e5f5
     style C fill:#fff3e0
     style D fill:#e8f5e8
     style E fill:#fff8e1
-    style F fill:#fce4ec
+    style S fill:#fce4ec
+    style SM fill:#ffebee
+```
+
+### **CI/CD Pipeline**
+```mermaid
+graph LR
+    A[Code Push] --> B[GitHub Actions CI]
+    B --> C[Build & Test]
+    C --> D[Push to Registry]
+    D --> E[Manual Deploy Decision]
+    E --> F[Backend Deploy]
+    E --> G[Frontend Deploy]
+    F --> H[Backend Cloud Run]
+    G --> I[Frontend Cloud Run]
 ```
 
 ### 🔧 Technology Stack
@@ -123,16 +141,24 @@ econome/
 │   └── frontend/
 │       └── index.html         # Web interface
 │
-├── 🚀 Deployment & Scripts
-│   ├── scripts/               # Deployment and setup scripts
+├── 🚀 Deployment & DevOps
+│   ├── devops/                # DevOps configurations
+│   │   ├── cloudbuild-ci.yaml     # CI pipeline (build only)
+│   │   ├── cloudbuild-deploy.yaml # Backend deployment
+│   │   ├── cloudbuild-ui.yaml     # Frontend deployment
+│   │   ├── cloudbuild-prod.yaml   # Emergency full deployment
+│   │   ├── Dockerfile             # Backend container
+│   │   ├── Dockerfile.ui          # Frontend container
+│   │   ├── deploy.sh              # Smart deployment script
+│   │   └── README.md              # DevOps documentation
+│   ├── scripts/               # Setup and utility scripts
 │   │   ├── deploy.sh          # Automated deployment script
 │   │   ├── setup-local.sh     # Local development setup
 │   │   ├── setup-credentials.sh # Credential configuration
 │   │   └── setup.sh           # General setup script
-│   ├── Dockerfile             # Container configuration
-│   ├── cloudbuild.yaml        # Google Cloud Build
 │   └── .github/workflows/     # CI/CD automation
-│       └── deploy.yml         # GitHub Actions workflow
+│       ├── deploy.yml         # CI pipeline (automated)
+│       └── deploy-manual.yml  # CD pipeline (manual)
 │
 ├── 📚 Documentation
 │   ├── README.md              # This file
@@ -246,12 +272,30 @@ git push -u origin main
 ```
 
 ### **GitHub Actions CI/CD**
-The project includes automated deployment via Google Cloud Build:
+The project follows SRE best practices with separated CI and CD:
 
-1. **Trigger**: Push to `main` branch
-2. **Build**: Docker container with dependencies
-3. **Deploy**: Automatic deployment to Cloud Run
-4. **Secrets**: Managed via Google Secret Manager
+#### **Continuous Integration (Automated)**
+- **Trigger**: Push to `main` branch
+- **Actions**: Build, test, and push images to registry
+- **No deployment**: CI only validates and prepares artifacts
+
+#### **Continuous Deployment (Manual)**
+- **Trigger**: Manual workflow dispatch
+- **Actions**: Deploy specific images to chosen environments
+- **Benefits**: Environment control, rollback capability, deployment gates
+
+#### **Available Workflows**
+1. **`.github/workflows/deploy.yml`** - CI pipeline (automated)
+2. **`.github/workflows/deploy-manual.yml`** - CD pipeline (manual)
+
+#### **Deployment Commands**
+```bash
+# Deploy to staging
+gh workflow run deploy-manual.yml -f environment=staging -f image_tag=latest
+
+# Deploy to production
+gh workflow run deploy-manual.yml -f environment=production -f image_tag=BUILD_ID
+```
 
 ---
 

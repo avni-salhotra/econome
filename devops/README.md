@@ -11,10 +11,12 @@ This setup follows **Site Reliability Engineering (SRE)** industry best practice
 ```
 devops/
 ├── cloudbuild-ci.yaml      # CI pipeline (build and push only)
-├── cloudbuild-prod.yaml    # Production deployment pipeline
-├── cloudbuild-deploy.yaml  # Deployment using deploy script
+├── cloudbuild-deploy.yaml  # Backend deployment pipeline
+├── cloudbuild-ui.yaml      # Frontend UI deployment pipeline
+├── cloudbuild-prod.yaml    # Emergency full deployment pipeline
 ├── deploy.sh               # Smart deployment script (local + Cloud Build)
-├── Dockerfile              # Container configuration
+├── Dockerfile              # Backend container configuration
+├── Dockerfile.ui           # Frontend container configuration
 └── secrets/                # Credential files (gitignored)
     ├── speech-credentials.json
     └── gemini-credentials.json
@@ -45,11 +47,17 @@ Images flow through environments (dev → staging → production) without rebuil
   - **SRE Rationale**: Fast feedback loop, early detection of issues
 
 ### **Tier 2: Controlled Deployment** ⭐ (Primary)
-- **`cloudbuild-deploy.yaml`**: Deployment-only pipeline
+- **`cloudbuild-deploy.yaml`**: Backend deployment pipeline
   - **Trigger**: Manual with environment parameters
-  - **Purpose**: Deploy existing images to specified environments
+  - **Purpose**: Deploy existing backend images to specified environments
   - **Benefits**: Fast deployment, easy rollbacks, environment promotion
   - **SRE Rationale**: Separation of build/deploy concerns, reduced deployment time
+
+- **`cloudbuild-ui.yaml`**: Frontend deployment pipeline
+  - **Trigger**: Manual deployment
+  - **Purpose**: Deploy frontend UI as separate Cloud Run service
+  - **Benefits**: Independent frontend scaling, separate release cycles
+  - **SRE Rationale**: Microservices architecture, independent deployments
 
 ### **Tier 3: Emergency Bypass**
 - **`cloudbuild-prod.yaml`**: Complete build+deploy pipeline
@@ -89,14 +97,39 @@ Images flow through environments (dev → staging → production) without rebuil
 ### **Production-Ready Process** (SRE Best Practice)
 
 ```mermaid
-graph LR
-    A[Code Push] --> B[Auto CI Build]
-    B --> C[Manual Deploy Decision]
-    C --> D[Deploy to Staging]
-    D --> E[Deploy to Production]
+graph TB
+    A[Code Push to Main] --> B[GitHub Actions CI]
+    B --> C[cloudbuild-ci.yaml]
+    C --> D[Images in Registry]
 
-    B --> F[Emergency Bypass]
-    F --> E
+    D --> E[Manual Deploy Decision]
+    E --> F[Backend Deploy]
+    E --> G[Frontend Deploy]
+
+    F --> H[cloudbuild-deploy.yaml]
+    G --> I[cloudbuild-ui.yaml]
+
+    H --> J[Backend Cloud Run]
+    I --> K[Frontend Cloud Run]
+
+    J --> L[Google Secrets Manager]
+    K --> M[Backend API Connection]
+
+    D --> N[Emergency Bypass]
+    N --> O[cloudbuild-prod.yaml]
+    O --> J
+```
+
+### **Service Architecture**
+
+```mermaid
+graph LR
+    U[Users] --> F[Frontend UI<br/>Cloud Run]
+    F --> B[Backend API<br/>Cloud Run]
+    B --> S[Google Secrets<br/>Manager]
+    B --> T[Speech-to-Text<br/>API]
+    B --> G[Gemini AI<br/>API]
+    B --> Q[BigQuery<br/>Analytics]
 ```
 
 ### **Step-by-Step Workflow**
@@ -111,16 +144,24 @@ git push origin main
 
 #### **2. Staging Deployment (Manual)**
 ```bash
-# Deploy latest image to staging
+# Deploy backend to staging
 gcloud builds submit --config devops/cloudbuild-deploy.yaml \
   --substitutions _ENVIRONMENT=staging,_IMAGE_TAG=latest
+
+# Deploy frontend to staging
+gcloud builds submit --config devops/cloudbuild-ui.yaml \
+  --substitutions _BACKEND_URL=https://econome-staging-PROJECT_ID.a.run.app
 ```
 
 #### **3. Production Deployment (Manual)**
 ```bash
-# Deploy tested image to production
+# Deploy backend to production
 gcloud builds submit --config devops/cloudbuild-deploy.yaml \
   --substitutions _ENVIRONMENT=production,_IMAGE_TAG=BUILD_ID
+
+# Deploy frontend to production
+gcloud builds submit --config devops/cloudbuild-ui.yaml \
+  --substitutions _BACKEND_URL=https://econome-PROJECT_ID.a.run.app
 ```
 
 #### **4. Rollback (If Needed)**
@@ -167,6 +208,19 @@ chmod +x devops/deploy.sh
    - AI Platform API
    - Secret Manager API
 
+## 🏗️ GitHub Actions + GCP Integration
+
+### **GitHub Actions Workflows**
+- **`.github/workflows/deploy.yml`**: CI-only pipeline (automated)
+  - **Trigger**: Push to main branch
+  - **Purpose**: Run tests, build and push images
+  - **Output**: Images ready for deployment
+
+- **`.github/workflows/deploy-manual.yml`**: Manual deployment workflow
+  - **Trigger**: Manual workflow dispatch
+  - **Purpose**: Deploy specific images to chosen environments
+  - **Benefits**: Environment selection, image tag control, health checks
+
 ## 🏗️ Recommended GCP Trigger Setup
 
 Based on SRE best practices, configure these Cloud Build triggers:
@@ -174,7 +228,8 @@ Based on SRE best practices, configure these Cloud Build triggers:
 ```yaml
 Triggers:
 ├── econome-ci          # Auto: Push to main → cloudbuild-ci.yaml
-├── econome-deploy      # Manual: Deploy → cloudbuild-deploy.yaml
+├── econome-deploy      # Manual: Backend deploy → cloudbuild-deploy.yaml
+├── econome-ui          # Manual: Frontend deploy → cloudbuild-ui.yaml
 └── econome-emergency   # Manual: Emergency → cloudbuild-prod.yaml
 ```
 
