@@ -1,6 +1,7 @@
 import os
 import json
 import google.generativeai as genai
+from google.oauth2 import service_account
 from typing import List, Dict
 
 # --- Configuration ---
@@ -15,12 +16,38 @@ GENERATION_PARAMS = {
 
 # --- Initialization ---
 
-if not os.getenv("GOOGLE_API_KEY") and not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-    raise EnvironmentError("❌ Missing Gemini credentials. Set GOOGLE_API_KEY or GOOGLE_APPLICATION_CREDENTIALS.")
+def _initialize_gemini(credentials_path: str = "gemini-credentials.json"):
+    """Initialize Gemini with proper error handling and service account credentials"""
+    try:
+        # First try service account credentials
+        if os.path.exists(credentials_path):
+            credentials = service_account.Credentials.from_service_account_file(credentials_path)
+            genai.configure(credentials=credentials)
+            print("✅ Gemini initialized with service account credentials")
+            return genai.GenerativeModel(GENERATION_MODEL)
 
-genai.configure()
+        # Fallback to API key if available
+        elif os.getenv("GOOGLE_API_KEY"):
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
+            print("✅ Gemini initialized with API key")
+            return genai.GenerativeModel(GENERATION_MODEL)
 
-model = genai.GenerativeModel(GENERATION_MODEL)
+        # Fallback to default credentials
+        elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+            genai.configure()
+            print("✅ Gemini initialized with application default credentials")
+            return genai.GenerativeModel(GENERATION_MODEL)
+
+        else:
+            print("⚠️ No Gemini credentials found - running in mock mode")
+            return None
+
+    except Exception as e:
+        print(f"⚠️ Gemini initialization failed: {e}")
+        return None
+
+# Initialize model (may be None if no credentials)
+model = _initialize_gemini()
 
 # --- Functions ---
 
@@ -29,6 +56,9 @@ def summarize_conversation(text: str) -> str:
     Use Gemini to organize and structure stream-of-consciousness thoughts
     into a coherent, readable format while preserving all important information.
     """
+    if model is None:
+        return f"Mock summary: Organized thoughts from conversation about {text[:50]}... (Gemini not available)"
+
     try:
         prompt = (
             "You are helping someone organize their stream-of-consciousness thoughts into a clear, structured format. "
@@ -63,6 +93,12 @@ def extract_action_items(text: str) -> List[Dict]:
     Returns a list of dicts with keys: type, action, deadline, and optionally recipient.
     FIXED VERSION with safe JSON parsing.
     """
+    if model is None:
+        return [
+            {"type": "todo", "action": "Mock action item from conversation", "deadline": "Soon", "recipient": None},
+            {"type": "reminder", "action": "Follow up on conversation topics", "deadline": "Tomorrow", "recipient": None}
+        ]
+
     try:
         prompt = (
             "From the following transcript, extract action items relevant to a single speaker (the user). Classify each item as one of:\n"

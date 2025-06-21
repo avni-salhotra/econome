@@ -171,24 +171,38 @@ class ProductionSTTServiceV2:
     
     def _process_audio_chunks(self) -> None:
         """Process audio chunks with Google Speech V2"""
+        print("🔄 Audio processing thread started")
         while self._is_recording:
             try:
                 # Get audio chunk with timeout
                 audio_chunk = self._audio_queue.get(timeout=1.0)
-                
+
+                # Double-check recording status before processing
+                if not self._is_recording:
+                    print("🛑 Recording stopped, skipping chunk processing")
+                    break
+
                 # Process the chunk
                 self._transcribe_chunk(audio_chunk)
-                
+
             except queue.Empty:
+                # Timeout is normal, just continue checking
                 continue
             except Exception as e:
                 print(f"❌ Audio processing error: {e}")
                 if self._error_callback:
                     self._error_callback("audio_processing", e)
+
+        print("🏁 Audio processing thread finished")
     
     def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
         """Transcribe audio chunk using Google Speech V2 with Chirp 2 model"""
         try:
+            # Check if recording is still active before processing
+            if not self._is_recording:
+                print("🛑 Recording stopped, skipping transcription")
+                return
+
             self._chunk_counter += 1
 
             if not self._has_credentials:
@@ -277,8 +291,10 @@ class ProductionSTTServiceV2:
                 
         except Exception as e:
             print(f"❌ Response processing error: {e}")
-            if self._error_callback:
-                self._error_callback("response_processing", e)
+            # TEMPORARILY DISABLED: Error callback to fix async issues
+            # if self._error_callback:
+            #     self._error_callback("response_processing", e)
+            print(f"⚠️ Error logged: response_processing - {e}")
     
     def _generate_mock_transcript(self) -> None:
         """Generate mock transcript for development"""
@@ -365,8 +381,10 @@ class ProductionSTTServiceV2:
             self._is_recording = False
             error_msg = f"Failed to start recording: {e}"
             print(f"❌ {error_msg}")
-            if self._error_callback:
-                self._error_callback("start_recording", e)
+            # TEMPORARILY DISABLED: Error callback to fix async issues
+            # if self._error_callback:
+            #     self._error_callback("start_recording", e)
+            print(f"⚠️ Start recording error logged: {e}")
             return {
                 "success": False,
                 "message": error_msg,
@@ -383,18 +401,30 @@ class ProductionSTTServiceV2:
 
         try:
             print("⏹️ Stopping recording...")
-            self._is_recording = False
 
+            # STEP 1: Stop audio stream FIRST to prevent new audio chunks
             if hasattr(self, '_audio_stream'):
                 try:
                     self._audio_stream.stop()
                     self._audio_stream.close()
+                    print("🔇 Audio stream stopped")
                 except Exception as e:
                     print(f"⚠️ Error stopping audio stream: {e}")
 
-            if self._processing_thread and self._processing_thread.is_alive():
-                self._processing_thread.join(timeout=2.0)
+            # STEP 2: Set recording flag to False to stop processing thread
+            self._is_recording = False
+            print("🛑 Recording flag set to False")
 
+            # STEP 3: Wait for processing thread to finish
+            if self._processing_thread and self._processing_thread.is_alive():
+                print("⏳ Waiting for processing thread to finish...")
+                self._processing_thread.join(timeout=3.0)
+                if self._processing_thread.is_alive():
+                    print("⚠️ Processing thread still alive after timeout")
+                else:
+                    print("✅ Processing thread finished")
+
+            # STEP 4: Clear any remaining audio buffers
             self._clear_audio_buffers()
 
             session_duration = time.time() - self._session_start_time if self._session_start_time else 0
@@ -414,8 +444,10 @@ class ProductionSTTServiceV2:
         except Exception as e:
             error_msg = f"Error stopping recording: {e}"
             print(f"❌ {error_msg}")
-            if self._error_callback:
-                self._error_callback("stop_recording", e)
+            # TEMPORARILY DISABLED: Error callback to fix async issues
+            # if self._error_callback:
+            #     self._error_callback("stop_recording", e)
+            print(f"⚠️ Stop recording error logged: {e}")
             return {
                 "success": False,
                 "message": error_msg,

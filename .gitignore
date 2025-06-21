@@ -1,9 +1,35 @@
-# Google Cloud Credentials
+# ===================================
+# SECURITY - NEVER COMMIT THESE FILES
+# ===================================
+
+# Google Cloud Credentials & Service Account Keys
 speech-credentials.json
 gemini-credentials.json
-*.json
+service-account-key.json
+gcp-credentials.json
+*-credentials.json
+*-service-account.json
+*.p12
+*.pem
 
-# Python
+# Environment Variables & Configuration
+.env
+.env.local
+.env.production
+.env.staging
+.env.development
+config.json
+secrets.json
+
+# API Keys & Tokens
+*.key
+*.token
+api_keys.txt
+secrets.txt
+
+# ===================================
+# PYTHON
+# ===================================
 __pycache__/
 *.py[cod]
 *$py.class
@@ -24,24 +50,108 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
-# Virtual Environment
+# PyInstaller
+*.manifest
+*.spec
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+
+# ===================================
+# VIRTUAL ENVIRONMENTS
+# ===================================
 venv/
 adk-env/
 env/
 ENV/
+.venv/
+.ENV/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# IDE
+# ===================================
+# IDE & EDITORS
+# ===================================
 .vscode/
 .idea/
 *.swp
 *.swo
+*~
+.project
+.pydevproject
 
-# OS
+# ===================================
+# OPERATING SYSTEM
+# ===================================
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
 Thumbs.db
 
-# Output files
+# ===================================
+# APPLICATION SPECIFIC
+# ===================================
+
+# Audio files and transcripts
 transcript_*.txt
 *.wav
 *.flac
+*.mp3
+*.m4a
+audio_recordings/
+temp_audio/
+
+# Logs
+*.log
+logs/
+log/
+
+# Temporary files
+tmp/
+temp/
+.tmp/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Docker
+.dockerignore
+docker-compose.override.yml
+
+# Cloud Build
+.gcloudignore
+
+# Node.js (if frontend dependencies added)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# ===================================
+# GOOGLE CLOUD SPECIFIC
+# ===================================
+# Application Default Credentials
+application_default_credentials.json
+# Cloud SDK
+.config/gcloud/
+# Terraform state (if used)
+*.tfstate
+*.tfstate.*
+.terraform/

@@ -138,9 +138,10 @@ class ConversationEvent:
 # --- Fixed STTAgent with proper async message handling and inter-agent messaging ---
 class STTAgent(Agent):
     """Agent wrapper for STT service - clean separation of concerns (asyncio compatible)"""
-    def __init__(self, stt_service, loop=None, **kwargs):
+    def __init__(self, stt_service, loop=None, websocket_manager=None, **kwargs):
         super().__init__("stt", "Speech-to-text agent using Google Cloud Speech V2")
         self.stt_service = stt_service
+        self.websocket_manager = websocket_manager  # Add WebSocket manager
         # If loop is not provided, get the running loop
         try:
             self.loop = loop or asyncio.get_running_loop()
@@ -245,33 +246,36 @@ class STTAgent(Agent):
             else:
                 print(f"📝 {segment.text} (conf: {segment.confidence:.3f}) [low confidence]")
             
-            # Send to analysis agent and orchestration agent using thread-safe call
-            def send_to_agents():
-                asyncio.create_task(self.send_message("analysis", Message(
-                    type="transcript_chunk",
-                    data=event.to_dict()
-                )))
-                asyncio.create_task(self.send_message("orchestration", Message(
-                    type="live_transcript",
-                    data=event.to_dict()
-                )))
-            self.loop.call_soon_threadsafe(send_to_agents)
+            # TEMPORARILY DISABLED: All async communication to fix crashes
+            # TODO: Implement proper thread-safe async communication
+
+            # For now, just store the transcript data locally
+            # The orchestration agent will collect it when the session ends
+            print(f"📝 Transcript collected: {segment.text[:50]}..." if len(segment.text) > 50 else f"📝 Transcript collected: {segment.text}")
+
+            # Store in session state for later collection
+            if not hasattr(self, '_collected_transcripts'):
+                self._collected_transcripts = []
+            self._collected_transcripts.append(event.to_dict())
         except Exception as e:
             print(f"❌ STTAgent: Error processing transcript segment: {e}")
 
     def _on_stt_error(self, error_type: str, error: Exception):
         """Callback from STT service for errors"""
         print(f"❌ STTAgent: STT service error ({error_type}): {error}")
-        def notify_error():
-            asyncio.create_task(self.send_message("orchestration", Message(
-                type="stt_error",
-                data={
-                    "error_type": error_type,
-                    "error_message": str(error),
-                    "timestamp": datetime.now().isoformat()
-                }
-            )))
-        self.loop.call_soon_threadsafe(notify_error)
+
+        # TEMPORARILY DISABLED: All async communication to fix crashes
+        # Just log the error for now
+        print(f"⚠️ STT Error logged: {error_type} - {error}")
+
+        # Store error for later collection if needed
+        if not hasattr(self, '_collected_errors'):
+            self._collected_errors = []
+        self._collected_errors.append({
+            "error_type": error_type,
+            "error_message": str(error),
+            "timestamp": datetime.now().isoformat()
+        })
 
     # Public interface methods for external control
     def start_transcription(self):
@@ -289,6 +293,19 @@ class STTAgent(Agent):
     def save_transcript(self, filename: Optional[str] = None):
         """Public method to save transcript"""
         return self.stt_service.save_transcript(filename)
+
+    def get_collected_transcripts(self):
+        """Get transcripts collected during the session"""
+        if hasattr(self, '_collected_transcripts'):
+            print(f"🔍 STT Agent returning {len(self._collected_transcripts)} collected transcripts")
+            return self._collected_transcripts
+        print("⚠️ STT Agent has no collected transcripts")
+        return []
+
+    def clear_collected_transcripts(self):
+        """Clear collected transcripts"""
+        if hasattr(self, '_collected_transcripts'):
+            self._collected_transcripts.clear()
 
 class LiveAnalysisAgent(Agent):
     """Real-time conversation analysis using Vertex AI Gemini - COLLECTION ONLY VERSION"""
@@ -921,13 +938,14 @@ class OrchestrationAgent(Agent):
 class ConversationIntelligenceSystem:
     """Main system orchestrator for real-time conversation intelligence - FIXED VERSION"""
 
-    def __init__(self, mock_mode: bool = False, **kwargs):
+    def __init__(self, mock_mode: bool = False, websocket_manager=None, **kwargs):
         print("🏗️ Initializing Conversation Intelligence System...")
         self.loop = None
         self.stt_service = None
         self.agents = {}
         self.is_running = False
         self.mock_mode = mock_mode
+        self.websocket_manager = websocket_manager  # Add WebSocket manager
         self.kwargs = kwargs
         print("✅ Conversation Intelligence System initialized")
 
@@ -952,12 +970,13 @@ class ConversationIntelligenceSystem:
     def _build_agents(self):
         """Build and initialize all agents - FIXED VERSION"""
         self.stt_service = create_stt_service(mock_mode=self.mock_mode, **self.kwargs)
-        
+
         # Use the agent classes from this file
+        # TEMPORARILY DISABLED: WebSocket manager to fix async crashes
         self.agents = {
-            "stt": STTAgent(self.stt_service, self.loop),
+            "stt": STTAgent(self.stt_service, self.loop, websocket_manager=None),
             "analysis": LiveAnalysisAgent(),
-            "actions": ActionItemAgent(), 
+            "actions": ActionItemAgent(),
             "orchestration": OrchestrationAgent()
         }
         self._connect_agents()
@@ -1021,11 +1040,26 @@ class ConversationIntelligenceSystem:
         # STEP 1: Stop the STT service to prevent new chunks
         self.agents["stt"].stop_transcription()
 
-        # STEP 2: Get collected transcript chunks directly from orchestration
+        # STEP 2: Get collected transcript chunks directly from STT agent
+        stt_agent = self.agents["stt"]
+        transcript_chunks = stt_agent.get_collected_transcripts()
+
+        # Also get from orchestration as fallback
         orchestration = self.agents["orchestration"]
-        transcript_chunks = orchestration.session_state.get("live_transcript_chunks", [])
+        orchestration_chunks = orchestration.session_state.get("live_transcript_chunks", [])
+
+        # Use whichever has more data
+        if len(transcript_chunks) < len(orchestration_chunks):
+            transcript_chunks = orchestration_chunks
+
+        # FIXED: If orchestration doesn't have transcripts, copy from STT agent
+        if len(orchestration_chunks) == 0 and len(transcript_chunks) > 0:
+            print(f"🔄 Copying {len(transcript_chunks)} transcripts from STT agent to orchestration")
+            orchestration.session_state["live_transcript_chunks"] = transcript_chunks
 
         print(f"📊 Found {len(transcript_chunks)} transcript chunks to process")
+        print(f"📊 STT agent has: {len(stt_agent.get_collected_transcripts())} chunks")
+        print(f"📊 Orchestration has: {len(orchestration_chunks)} chunks")
 
         # STEP 3: Call the parallel processing directly (much cleaner!)
         try:
