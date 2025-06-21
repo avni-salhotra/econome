@@ -11,16 +11,14 @@ steps:
         '.'
       ]
 
-  # Step 2: Push both tags to Container Registry in a single step
-  - id: 'push-images'
+  # Step 2: Push both tags to Container Registry
+  - id: 'push-build-id'
     name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push', 'gcr.io/$PROJECT_ID/econome:$BUILD_ID',
-        '&&',
-        'docker',
-        'push', 'gcr.io/$PROJECT_ID/econome:latest'
-      ]
+    args: ['push', 'gcr.io/$PROJECT_ID/econome:$BUILD_ID']
+
+  - id: 'push-latest'
+    name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/econome:latest']
 
   # Step 3: Deploy the image to Cloud Run with environment variables and secrets
   - id: 'deploy-cloud-run'

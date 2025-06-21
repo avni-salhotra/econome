@@ -14,15 +14,13 @@ steps:
         '.'
       ]
 
-  - id: 'push-images'
+  - id: 'push-build-id'
     name: 'gcr.io/cloud-builders/docker'
-    args:
-      [
-        'push', 'gcr.io/$PROJECT_ID/econome:$BUILD_ID',
-        '&&',
-        'docker',
-        'push', 'gcr.io/$PROJECT_ID/econome:latest'
-      ]
+    args: ['push', 'gcr.io/$PROJECT_ID/econome:$BUILD_ID']
+
+  - id: 'push-latest'
+    name: 'gcr.io/cloud-builders/docker'
+    args: ['push', 'gcr.io/$PROJECT_ID/econome:latest']
 
 images:
   - 'gcr.io/$PROJECT_ID/econome:$BUILD_ID'
