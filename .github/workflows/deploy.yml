@@ -32,11 +32,17 @@ jobs:
         restore-keys: |
           ${{ runner.os }}-pip-
 
+    - name: Install system dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y portaudio19-dev python3-pyaudio
+
     - name: Install dependencies
       run: |
         python --version
         python -m pip install --upgrade pip
         pip install -r requirements.txt
+        pip install pytest
 
     - name: Run unit tests and functional validation
       run: |
