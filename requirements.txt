@@ -25,6 +25,12 @@ google-generativeai>=0.8.0
 # Firestore for session management (REQUIRED)
 google-cloud-firestore>=2.20.0
 
+# AI Platform for Vertex AI (REQUIRED)
+google-cloud-aiplatform>=1.70.0
+
+# BigQuery for analytics (OPTIONAL)
+google-cloud-bigquery>=3.28.0
+
 # Authentication (REQUIRED)
 google-auth>=2.40.0
 

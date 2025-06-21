@@ -46,7 +46,7 @@ jobs:
 
     - name: Run unit tests and functional validation
       run: |
-        python -m pytest test_*.py -v || echo "No pytest found, running manual tests"
+        python -m pytest tests/ -v || echo "No tests found, running manual tests"
         cd src && python main.py --test
       env:
         MOCK_MODE: true
