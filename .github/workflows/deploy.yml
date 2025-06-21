@@ -1,4 +1,4 @@
-name: CI + Deploy: Main Branch Push
+name: "CI + Deploy: Main Branch Push"
 
 on:
   push:
@@ -20,9 +20,9 @@ jobs:
       uses: actions/checkout@v4
 
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
-        python-version: '3.13'
+        python-version: '3.12'
 
     - name: Cache dependencies
       uses: actions/cache@v3
@@ -34,6 +34,7 @@ jobs:
 
     - name: Install dependencies
       run: |
+        python --version
         python -m pip install --upgrade pip
         pip install -r requirements.txt
 
