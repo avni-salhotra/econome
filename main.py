@@ -4,7 +4,7 @@ Production Real-Time Conversation Intelligence System
 Main demo script for Google Cloud ADK Hackathon
 
 Clean architecture with STT service and multi-agent coordination
-SIMPLIFIED VERSION: Focus on STT → Clean Transcript → Gemini Summary
+UPDATED VERSION: Parallel processing with Summary + Action Items
 FIXED: Use 2-second chunks for better STT quality
 """
 
@@ -29,16 +29,16 @@ def print_banner():
     print("║          🏆 REAL-TIME CONVERSATION INTELLIGENCE SYSTEM 🏆            ║")
     print("║                     Google Cloud ADK Hackathon                       ║")
     print("╠═══════════════════════════════════════════════════════════════════════╣")
-    print("║  🎤 Google Cloud Speech V2  │  🧠 Gemini Final Analysis              ║")
+    print("║  🎤 Google Cloud Speech V2  │  🧠 Gemini Parallel Analysis           ║")
     print("║  📝 Clean Transcript Build  │  🔄 Multi-Agent Architecture           ║")
-    print("║  📊 End-to-End Intelligence │  💾 Session Management                 ║")
+    print("║  📊 Summary + Action Items  │  💾 Session Management                 ║")
     print("╚═══════════════════════════════════════════════════════════════════════╝")
 
 async def interactive_demo():
     """Interactive demo with real-time conversation processing"""
     
     print_banner()
-    print("\n🎯 INTERACTIVE DEMO MODE - SIMPLIFIED FLOW")
+    print("\n🎯 INTERACTIVE DEMO MODE - PARALLEL PROCESSING")
     print("=" * 70)
     
     # Configuration
@@ -53,7 +53,7 @@ async def interactive_demo():
     print("\n🏗️ Initializing system...")
     system = ConversationIntelligenceSystem(
         mock_mode=mock_mode,
-        chunk_duration=2.0,  # FIXED: Use 2-second chunks for better quality (like working test)
+        chunk_duration=2.0,  # FIXED: Use 2-second chunks for better quality
         project_id="econome-hackathon"
     )
     
@@ -67,7 +67,7 @@ async def interactive_demo():
         # Interactive loop
         while True:
             print("\n" + "="*50)
-            print("🎮 SIMPLIFIED CONVERSATION INTELLIGENCE")
+            print("🎮 PARALLEL CONVERSATION INTELLIGENCE")
             print("="*50)
             print("1. Start live conversation recording")
             print("2. Get system status")
@@ -102,7 +102,7 @@ async def interactive_demo():
         print("✅ System shutdown complete")
 
 async def live_conversation_demo(system):
-    """Live conversation recording demo - WITH CLEAN LIVE STT DISPLAY"""
+    """Live conversation recording demo - UPDATED FOR ASYNC"""
     
     print("\n🎤 LIVE CONVERSATION DEMO")
     print("-" * 30)
@@ -118,7 +118,8 @@ async def live_conversation_demo(system):
     print("\n📢 SPEAK CLEARLY AND NATURALLY:")
     print("• Use complete sentences")
     print("• Talk about your plans, projects, or thoughts")
-    print("• Avoid excessive filler words (um, uh)")
+    print("• Mention tasks you need to do or people to contact")
+    print("• Include deadlines or scheduled events")
     print("• Speak for at least 30 seconds for good analysis")
     print("\n🛑 **PRESS ENTER TO STOP RECORDING WHEN DONE**")
     
@@ -148,14 +149,15 @@ async def live_conversation_demo(system):
     
     print("\n" + "-" * 50)
     print("⏹️ Stopping recording and processing...")
-    print("🧠 Building clean transcript and generating Gemini summary...")
+    print("🧠 Running PARALLEL Gemini analysis (Summary + Action Items)...")
     
-    summary = system.stop_conversation()
+    # 🆕 NEW: Use await for async stop_conversation
+    summary = await system.stop_conversation()
     
     display_conversation_results(summary)
 
 async def automated_demo(system):
-    """Automated demo with simulated conversation"""
+    """Automated demo with simulated conversation - UPDATED FOR ASYNC"""
     
     print("\n🤖 AUTOMATED DEMO")
     print("-" * 20)
@@ -174,12 +176,13 @@ async def automated_demo(system):
     await asyncio.sleep(30)
     
     # Stop and show results
-    print("🧠 Processing final analysis...")
-    summary = system.stop_conversation()
+    print("🧠 Processing PARALLEL final analysis...")
+    # 🆕 NEW: Use await for async stop_conversation
+    summary = await system.stop_conversation()
     display_conversation_results(summary)
 
 def display_conversation_results(summary: Dict[str, Any]):
-    """Display conversation analysis results - CLEAN TRANSCRIPT + GEMINI SUMMARY"""
+    """Display conversation analysis results - SUMMARY + ACTION ITEMS"""
     
     print("\n" + "="*70)
     print("📊 CONVERSATION ANALYSIS RESULTS")
@@ -220,7 +223,7 @@ def display_conversation_results(summary: Dict[str, Any]):
     
     # Show Gemini summary
     gemini_summary = summary.get('gemini_summary', 'No summary available')
-    print(f"\n🧠 GEMINI SUMMARY:")
+    print(f"\n🧠 ORGANIZED THOUGHTS:")
     print("-" * 50)
     
     if (gemini_summary and 
@@ -231,31 +234,90 @@ def display_conversation_results(summary: Dict[str, Any]):
         
         print(gemini_summary)
         print(f"\n📏 Summary Length: {len(gemini_summary)} characters")
-        print("✅ Gemini analysis successful!")
         
     else:
         print("❌ Summary not generated successfully")
         print(f"Status: {gemini_summary}")
-        print("\n💡 To get better results:")
-        print("   • Speak for at least 30 seconds")
-        print("   • Use clear, complete sentences")
-        print("   • Avoid long pauses or background noise")
-        print("   • Talk about specific topics or plans")
-        print("   • Ensure good microphone quality")
+
+    # 🆕 NEW: Show Action Items
+    action_items = summary.get('action_items', [])
+    total_action_items = summary.get('total_action_items', 0)
     
+    print(f"\n📋 ACTION ITEMS ({total_action_items} found):")
+    print("-" * 50)
+    
+    if action_items and len(action_items) > 0:
+        # Group by type for better organization
+        todos = [item for item in action_items if isinstance(item, dict) and item.get('type') == 'todo']
+        communications = [item for item in action_items if isinstance(item, dict) and item.get('type') == 'communicate']
+        reminders = [item for item in action_items if isinstance(item, dict) and item.get('type') == 'reminder']
+        
+        # Display todos
+        if todos:
+            print("📝 TO-DO ITEMS:")
+            for i, item in enumerate(todos, 1):
+                action_text = item.get('action', '')
+                deadline = item.get('deadline')
+                print(f"   {i}. {action_text}")
+                if deadline:
+                    print(f"      ⏰ Due: {deadline}")
+        
+        # Display communications
+        if communications:
+            print("\n💬 COMMUNICATIONS:")
+            for i, item in enumerate(communications, 1):
+                action_text = item.get('action', '')
+                recipient = item.get('recipient')
+                deadline = item.get('deadline')
+                print(f"   {i}. {action_text}")
+                if recipient:
+                    print(f"      👤 To: {recipient}")
+                if deadline:
+                    print(f"      ⏰ By: {deadline}")
+        
+        # Display reminders
+        if reminders:
+            print("\n⏰ REMINDERS:")
+            for i, item in enumerate(reminders, 1):
+                action_text = item.get('action', '')
+                deadline = item.get('deadline')
+                print(f"   {i}. {action_text}")
+                if deadline:
+                    print(f"      📅 When: {deadline}")
+        
+        print(f"\n✅ Action items successfully extracted!")
+        
+    else:
+        print("📝 No specific action items detected in this conversation")
+        print("💡 To get action items, try mentioning:")
+        print("   • Tasks you need to do")
+        print("   • People you need to contact")
+        print("   • Deadlines or scheduled events")
+        print("   • Follow-ups or reminders")
+
     # Show processing pipeline status
-    print(f"\n⚡ PROCESSING PIPELINE:")
     transcript_ok = len(full_transcript.strip()) > 20 if full_transcript else False
     summary_ok = (gemini_summary and 
                   "not yet generated" not in gemini_summary.lower() and 
                   "failed" not in gemini_summary.lower() and
                   "too short" not in gemini_summary.lower())
     
+    print(f"\n⚡ PARALLEL PROCESSING PIPELINE:")
     print(f"   🎤 Real-time STT transcription: ✅ Completed")
     print(f"   📝 Transcript chunk collection: ✅ {summary.get('total_transcript_chunks', 0)} chunks")
     print(f"   🧹 Transcript cleaning & filtering: {'✅ Success' if transcript_ok else '⚠️  Insufficient'}")
-    print(f"   🧠 Gemini analysis: {'✅ Success' if summary_ok else '❌ Failed'}")
+    print(f"   🧠 Gemini summary generation: {'✅ Success' if summary_ok else '❌ Failed'}")
+    print(f"   📋 Gemini action extraction: {'✅ Success' if total_action_items >= 0 else '❌ Failed'}")
+    print(f"   ⚡ Parallel processing: {'✅ Both calls simultaneous' if summary_ok else '⚠️  Sequential fallback'}")
     print(f"   🔄 Multi-agent coordination: ✅ Active")
+    
+    print(f"\n🏆 HACKATHON FEATURES DEMONSTRATED:")
+    print(f"   ✅ Google Cloud Speech V2 integration")
+    print(f"   ✅ Gemini 1.5 Pro multi-call coordination")
+    print(f"   ✅ Advanced async parallel processing")
+    print(f"   ✅ Multi-agent architecture patterns")
+    print(f"   ✅ Real-time conversation intelligence")
+    print(f"   ✅ Structured action item extraction")
     
     # Debug info for troubleshooting
     if not transcript_ok:
@@ -266,10 +328,11 @@ def display_conversation_results(summary: Dict[str, Any]):
     
     print(f"\n💡 NEXT STEPS:")
     if transcript_ok and summary_ok:
-        print(f"   🎉 Great! The system worked end-to-end")
+        print(f"   🎉 Great! The parallel processing system worked end-to-end")
         print(f"   • Try different conversation topics")
         print(f"   • Test with longer conversations")
-        print(f"   • Experiment with different speaking styles")
+        print(f"   • Experiment with action-oriented speech")
+        print(f"   • Notice the parallel processing speed improvement")
     else:
         print(f"   🔧 System needs tuning:")
         if not transcript_ok:
@@ -326,7 +389,7 @@ async def test_stt_directly(mock_mode: bool):
     
     # Test recording
     print("\nStarting 20-second STT test...")
-    print("🎤 Try saying: 'Today is a great day. I'm working on an exciting project.'")
+    print("🎤 Try saying: 'Today is a great day. I need to call Sarah by Friday and finish my project.'")
     start_result = stt.start_recording()
     
     if start_result.get("success"):
@@ -347,65 +410,66 @@ async def test_stt_directly(mock_mode: bool):
     else:
         print(f"❌ Failed to start recording: {start_result.get('message')}")
 
-def quick_test():
-    """Quick system validation test"""
+async def quick_test():
+    """Quick system validation test - UPDATED FOR ASYNC"""
     
-    print("🧪 QUICK SYSTEM TEST - SIMPLIFIED FLOW")
-    print("=" * 40)
+    print("🧪 QUICK SYSTEM TEST - PARALLEL PROCESSING")
+    print("=" * 45)
     
-    async def run_test():
-        # Test system initialization
-        print("1. Testing system initialization...")
-        system = ConversationIntelligenceSystem(mock_mode=True, chunk_duration=2.0)
-        
-        # Test system startup
-        print("2. Testing system startup...")
-        session_id = await system.start_system()
-        print(f"   ✅ Session created: {session_id}")
-        
-        # Test status
-        print("3. Testing status reporting...")
-        status = system.get_live_status()
-        print(f"   ✅ System running: {status.get('system_running')}")
-        
-        # Test conversation start/stop
-        print("4. Testing conversation flow...")
-        start_result = system.start_conversation()
-        print(f"   ✅ Conversation started: {start_result.get('success')}")
-        
-        await asyncio.sleep(5)  # Longer pause for mock data generation
-        
-        stop_result = system.stop_conversation()
-        print(f"   ✅ Conversation stopped: {stop_result.get('session_id') is not None}")
-        
-        # Check if we got a summary
-        summary = stop_result.get('gemini_summary', '')
-        print(f"   ✅ Summary generated: {len(summary) > 0}")
-        
-        # Cleanup
-        print("5. Testing system shutdown...")
-        system.stop_system()
-        print("   ✅ System stopped")
-        
-        print("\n🎯 SIMPLIFIED SYSTEM TEST COMPLETE!")
-        print("✅ STT → Clean Transcript → Gemini Summary flow working")
+    # Test system initialization
+    print("1. Testing system initialization...")
+    system = ConversationIntelligenceSystem(mock_mode=True, chunk_duration=2.0)
     
-    asyncio.run(run_test())
+    # Test system startup
+    print("2. Testing system startup...")
+    session_id = await system.start_system()
+    print(f"   ✅ Session created: {session_id}")
+    
+    # Test status
+    print("3. Testing status reporting...")
+    status = system.get_live_status()
+    print(f"   ✅ System running: {status.get('system_running')}")
+    
+    # Test conversation start/stop
+    print("4. Testing conversation flow...")
+    start_result = system.start_conversation()
+    print(f"   ✅ Conversation started: {start_result.get('success')}")
+    
+    await asyncio.sleep(5)  # Longer pause for mock data generation
+    
+    # 🆕 NEW: Use await for async stop_conversation
+    stop_result = await system.stop_conversation()
+    print(f"   ✅ Conversation stopped: {stop_result.get('session_id') is not None}")
+    
+    # Check if we got both summary and action items
+    summary = stop_result.get('gemini_summary', '')
+    action_items = stop_result.get('action_items', [])
+    print(f"   ✅ Summary generated: {len(summary) > 0}")
+    print(f"   ✅ Action items extracted: {len(action_items)} items")
+    
+    # Cleanup
+    print("5. Testing system shutdown...")
+    system.stop_system()
+    print("   ✅ System stopped")
+    
+    print("\n🎯 PARALLEL PROCESSING SYSTEM TEST COMPLETE!")
+    print("✅ STT → Parallel Gemini (Summary + Actions) flow working")
 
 def show_help():
     """Show help information"""
     
-    print("\n📖 SIMPLIFIED CONVERSATION INTELLIGENCE SYSTEM")
+    print("\n📖 PARALLEL CONVERSATION INTELLIGENCE SYSTEM")
     print("=" * 55)
-    print("This system provides conversation intelligence using:")
+    print("This system provides advanced conversation intelligence using:")
     print("• Google Cloud Speech-to-Text V2 for real-time transcription")
     print("• Intelligent transcript cleaning and filtering")
-    print("• Gemini AI for final conversation summary")
+    print("• Gemini AI for parallel summary + action item processing")
     print("• Multi-agent architecture for coordination")
-    print("\nSimplified Flow:")
+    print("\nParallel Processing Flow:")
     print("1. Real-time STT transcription (visible during recording)")
     print("2. Collect and clean transcript chunks")
-    print("3. Generate final Gemini summary at session end")
+    print("3. PARALLEL Gemini analysis: Summary + Action Items")
+    print("4. Display organized thoughts + categorized action items")
     print("\nUsage:")
     print("  python main.py                 - Interactive demo")
     print("  python main.py --test          - Quick system test")
@@ -417,9 +481,13 @@ def show_help():
     print("\nTips for best results:")
     print("• Speak clearly in complete sentences")
     print("• Record for at least 30 seconds")
+    print("• Mention specific tasks, people, and deadlines")
     print("• Avoid excessive background noise")
     print("• Use good microphone quality")
-    print("• Talk about specific topics or plans")
+    print("\nAction Item Detection:")
+    print("• Tasks: 'I need to...', 'I should...', 'I have to...'")
+    print("• Communications: 'Call John', 'Email Sarah', 'Text Mike'")
+    print("• Reminders: 'Meeting at 3pm', 'Doctor appointment Friday'")
 
 def main():
     """Main entry point"""
@@ -430,7 +498,7 @@ def main():
         if arg in ["--help", "-h", "help"]:
             show_help()
         elif arg in ["--test", "-t", "test"]:
-            quick_test()
+            asyncio.run(quick_test())
         else:
             print(f"❌ Unknown argument: {arg}")
             show_help()

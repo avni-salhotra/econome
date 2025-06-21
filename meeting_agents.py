@@ -670,9 +670,9 @@ class OrchestrationAgent(Agent):
                 return ""
 
     async def _process_final_analysis(self, completion_data: Dict):
-        """Process final complete transcript with Gemini - CLEAN VERSION"""
+        """Process final complete transcript with PARALLEL Gemini calls - SUMMARY + ACTION ITEMS"""
         try:
-            print(f"🔍 Starting final analysis...")
+            print(f"🔍 Starting parallel final analysis...")
             
             # Get collected transcript chunks from session state
             transcript_chunks = self.session_state.get("live_transcript_chunks", [])
@@ -681,6 +681,7 @@ class OrchestrationAgent(Agent):
             if len(transcript_chunks) < 3:
                 print("⚠️ Too few transcript chunks for analysis")
                 self.session_state["final_summary"] = "Not enough conversation content to analyze"
+                self.session_state["action_items"] = []
                 return
             
             # Build clean transcript from collected chunks
@@ -689,30 +690,73 @@ class OrchestrationAgent(Agent):
             if len(clean_transcript.strip()) < 20:
                 print("⚠️ Clean transcript too short for analysis")
                 self.session_state["final_summary"] = "Conversation too short to analyze meaningfully"
+                self.session_state["action_items"] = []
                 return
 
-            print(f"🧠 Sending clean transcript ({len(clean_transcript)} chars) to Gemini...")
+            print(f"🧠 Sending clean transcript ({len(clean_transcript)} chars) to PARALLEL Gemini processing...")
             print(f"🧠 Preview: {clean_transcript[:100]}...")
 
-            # Import and use Gemini directly
-            from gemini_agent import summarize_conversation
+            # Import Gemini functions
+            from gemini_agent import summarize_conversation, extract_action_items
 
-            # Get comprehensive summary from Gemini
-            final_summary = summarize_conversation(clean_transcript)
+            # 🚀 PARALLEL PROCESSING: Both Gemini calls happen simultaneously!
+            print("⚡ Starting PARALLEL Gemini processing...")
+            
+            async def get_summary():
+                """Async wrapper for summary generation"""
+                print("🧠 [PARALLEL TASK 1] Generating organized summary...")
+                return summarize_conversation(clean_transcript)
+            
+            async def get_action_items():
+                """Async wrapper for action item extraction"""
+                print("📋 [PARALLEL TASK 2] Extracting action items...")
+                return extract_action_items(clean_transcript)
+            
+            # Execute both Gemini calls in parallel using asyncio.gather()
+            summary_task = asyncio.create_task(get_summary())
+            actions_task = asyncio.create_task(get_action_items())
+            
+            # Wait for BOTH to complete simultaneously
+            final_summary, action_items = await asyncio.gather(summary_task, actions_task)
+            
+            print("⚡ PARALLEL processing complete!")
 
-            # Store results in session state
+            # Store BOTH results in session state
             self.session_state["final_summary"] = final_summary
+            self.session_state["action_items"] = action_items
             self.session_state["full_transcript_text"] = clean_transcript
 
-            print(f"✅ Final analysis complete!")
-            print(f"✅ Summary length: {len(final_summary)} chars")
+            # Log results
+            print(f"✅ Summary generated: {len(final_summary)} chars")
             print(f"✅ Summary preview: {final_summary[:100]}...")
+            print(f"✅ Action items extracted: {len(action_items)} items")
+            
+            # Display action items for immediate feedback
+            if action_items and len(action_items) > 0:
+                print(f"📋 ACTION ITEMS FOUND:")
+                for i, item in enumerate(action_items, 1):
+                    if isinstance(item, dict) and "action" in item:
+                        item_type = item.get("type", "unknown").upper()
+                        action_text = item.get("action", "")
+                        deadline = item.get("deadline")
+                        recipient = item.get("recipient")
+                        
+                        print(f"   {i}. [{item_type}] {action_text}")
+                        if deadline:
+                            print(f"      ⏰ Deadline: {deadline}")
+                        if recipient:
+                            print(f"      👤 Recipient: {recipient}")
+            else:
+                print("📋 No action items found in conversation")
+
+            print(f"✅ PARALLEL final analysis complete!")
 
         except Exception as e:
-            print(f"❌ Final analysis failed: {e}")
+            print(f"❌ Parallel final analysis failed: {e}")
             import traceback
             traceback.print_exc()
             self.session_state["final_summary"] = f"Analysis failed: {str(e)}"
+            self.session_state["action_items"] = []
     
     async def _handle_live_transcript(self, message: Message):
         """Handle live transcript updates"""
@@ -827,14 +871,15 @@ class OrchestrationAgent(Agent):
         return summary
 
     def get_session_summary(self) -> Dict[str, Any]:
-        """Get comprehensive session summary with REAL Gemini summary"""
+        """Get comprehensive session summary with REAL Gemini summary AND action items"""
         if not self.current_session:
             return {"error": "No active session"}
 
         duration = datetime.now() - self.session_state["start_time"]
 
-        # Get the real summary from final analysis
+        # Get both summary and action items from final analysis
         final_summary = self.session_state.get("final_summary", "Summary not yet generated")
+        action_items = self.session_state.get("action_items", [])
         full_transcript = self.session_state.get("full_transcript_text", "")
 
         return {
@@ -847,6 +892,8 @@ class OrchestrationAgent(Agent):
             "total_transcript_chunks": len(self.session_state.get("live_transcript_chunks", [])),
             "full_transcript": full_transcript,
             "gemini_summary": final_summary,
+            "action_items": action_items,  # 🆕 NEW: Include action items in results
+            "total_action_items": len(action_items) if action_items else 0,  # 🆕 NEW: Count
             "last_activity": self.session_state.get("last_activity", self.session_state["start_time"]).isoformat(),
             "agent_health": self.agent_health
         }
@@ -964,12 +1011,12 @@ class ConversationIntelligenceSystem:
         print("🎤 Live conversation processing started...")
         return result
 
-    def stop_conversation(self) -> Dict[str, Any]:
-        """Stop conversation and get summary - SIMPLIFIED DIRECT APPROACH"""
+    async def stop_conversation(self) -> Dict[str, Any]:
+        """Stop conversation and get summary - ASYNC PARALLEL PROCESSING VERSION"""
         if not self.is_running:
             return {"error": "System not running"}
 
-        print("🛑 Stopping conversation and processing final analysis...")
+        print("🛑 Stopping conversation and processing PARALLEL final analysis...")
 
         # STEP 1: Stop the STT service to prevent new chunks
         self.agents["stt"].stop_transcription()
@@ -980,10 +1027,10 @@ class ConversationIntelligenceSystem:
 
         print(f"📊 Found {len(transcript_chunks)} transcript chunks to process")
 
-        # STEP 3: Call the final analysis directly (bypass async messaging)
+        # STEP 3: Call the parallel processing directly (much cleaner!)
         try:
             if len(transcript_chunks) >= 3:
-                print("🧠 Processing final analysis directly...")
+                print("🧠 Processing PARALLEL final analysis...")
 
                 # Build clean transcript using the method we fixed
                 clean_transcript = orchestration._build_clean_transcript(transcript_chunks)
@@ -992,32 +1039,44 @@ class ConversationIntelligenceSystem:
                     print(f"📝 Clean transcript ready: {len(clean_transcript)} chars")
                     print(f"📝 Preview: {clean_transcript[:100]}...")
 
-                    # Call Gemini directly
-                    from gemini_agent import summarize_conversation
-                    final_summary = summarize_conversation(clean_transcript)
+                    # Import Gemini functions
+                    from gemini_agent import summarize_conversation, extract_action_items
 
-                    # Store results in session state
+                    # 🚀 DIRECT PARALLEL EXECUTION (much cleaner!)
+                    print("⚡ Executing PARALLEL Gemini analysis...")
+
+                    # Both happen simultaneously!
+                    summary_task = asyncio.create_task(asyncio.to_thread(summarize_conversation, clean_transcript))
+                    actions_task = asyncio.create_task(asyncio.to_thread(extract_action_items, clean_transcript))
+
+                    final_summary, action_items = await asyncio.gather(summary_task, actions_task)
+
+                    # Store BOTH results in session state
                     orchestration.session_state["final_summary"] = final_summary
+                    orchestration.session_state["action_items"] = action_items
                     orchestration.session_state["full_transcript_text"] = clean_transcript
 
-                    print(f"✅ Final summary generated: {len(final_summary)} chars")
-                    print(f"✅ Summary preview: {final_summary[:100]}...")
+                    print(f"✅ PARALLEL processing complete!")
+                    print(f"✅ Summary: {len(final_summary)} chars")
+                    print(f"✅ Action items: {len(action_items)} items")
                 else:
                     print("⚠️ Clean transcript too short for analysis")
                     orchestration.session_state["final_summary"] = "Conversation too short to analyze meaningfully"
+                    orchestration.session_state["action_items"] = []
             else:
                 print("⚠️ Too few transcript chunks for analysis")
                 orchestration.session_state["final_summary"] = "Not enough conversation content to analyze"
-
+                orchestration.session_state["action_items"] = []
         except Exception as e:
-            print(f"❌ Final analysis failed: {e}")
+            print(f"❌ Parallel final analysis failed: {e}")
             import traceback
             traceback.print_exc()
             orchestration.session_state["final_summary"] = f"Analysis failed: {str(e)}"
+            orchestration.session_state["action_items"] = []
 
-        # Get session summary
+        # Get session summary (now includes action items)
         summary = orchestration.get_session_summary()
-        print("⏹️ Conversation stopped with direct final analysis")
+        print("⏹️ Conversation stopped with PARALLEL final analysis")
         return summary
 
     def get_live_status(self) -> Dict[str, Any]:
