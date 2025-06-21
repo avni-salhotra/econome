@@ -93,16 +93,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     if: github.event_name == 'pull_request'
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-
-    - name: Run security scan
-      uses: securecodewarrior/github-action-add-sarif@v1
-      with:
-        sarif-file: 'security-scan-results.sarif'
-      continue-on-error: true
 
     - name: Check for secrets in code
       run: |
@@ -111,12 +105,12 @@ jobs:
           echo "❌ Potential API keys found in code"
           exit 1
         fi
-        
+
         if grep -r "AIza" . --exclude-dir=.git --exclude-dir=.github; then
           echo "❌ Potential Google API keys found in code"
           exit 1
         fi
-        
+
         echo "✅ No obvious secrets found in code"
 
     - name: Verify .gitignore
@@ -126,15 +120,26 @@ jobs:
           echo "❌ speech-credentials.json not in .gitignore"
           exit 1
         fi
-        
+
         if ! grep -q "gemini-credentials.json" .gitignore; then
           echo "❌ gemini-credentials.json not in .gitignore"
           exit 1
         fi
-        
+
         if ! grep -q ".env" .gitignore; then
           echo "❌ .env not in .gitignore"
           exit 1
         fi
-        
+
         echo "✅ Security files properly excluded"
+
+    - name: Run CodeQL Analysis
+      uses: github/codeql-action/init@v3
+      with:
+        languages: python
+
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
+
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
