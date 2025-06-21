@@ -57,8 +57,8 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
-  # Deploy job only triggers on main branch pushes
-  deploy:
+  # CI-only job: Build and push image to registry (NO DEPLOYMENT)
+  build:
     needs: test
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -67,7 +67,7 @@ jobs:
       PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
       SERVICE_NAME: econome
       REGION: us-central1
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -82,32 +82,12 @@ jobs:
     - name: Configure Docker for GCR
       run: gcloud auth configure-docker
 
-    - name: Create secrets in Google Secret Manager
+    - name: Build and push image only (CI)
       run: |
-        # Create speech credentials secret
-        echo '${{ secrets.SPEECH_CREDENTIALS }}' | gcloud secrets create speech-credentials --data-file=- || \
-        echo '${{ secrets.SPEECH_CREDENTIALS }}' | gcloud secrets versions add speech-credentials --data-file=-
-        
-        # Create gemini credentials secret  
-        echo '${{ secrets.GEMINI_CREDENTIALS }}' | gcloud secrets create gemini-credentials --data-file=- || \
-        echo '${{ secrets.GEMINI_CREDENTIALS }}' | gcloud secrets versions add gemini-credentials --data-file=-
-
-    - name: Build and deploy to Cloud Run
-      run: |
-        gcloud builds submit --config devops/cloudbuild-prod.yaml .
-
-    - name: Get service URL
-      id: get-url
-      run: |
-        URL=$(gcloud run services describe $SERVICE_NAME --region=$REGION --format="value(status.url)")
-        echo "SERVICE_URL=$URL" >> $GITHUB_OUTPUT
-        echo "Service deployed at: $URL"
-
-    - name: Test deployment
-      run: |
-        sleep 30  # Wait for service to be ready
-        curl -f ${{ steps.get-url.outputs.SERVICE_URL }}/health || exit 1
-        echo "✅ Deployment health check passed"
+        echo "🏗️ Running CI build - NO deployment"
+        gcloud builds submit --config devops/cloudbuild-ci.yaml .
+        echo "✅ Image built and pushed to registry"
+        echo "🚀 Ready for manual deployment via GCP Console or deploy script"
 
   security-scan:
     runs-on: ubuntu-latest
