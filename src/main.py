@@ -10,18 +10,27 @@ FIXED: Use 2-second chunks for better STT quality
 
 # Ensure Gemini credentials are available
 import os
+import sys
+from pathlib import Path
+
+# Add parent directory to path for imports
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 if "GOOGLE_APPLICATION_CREDENTIALS" not in os.environ:
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/Users/avnisalhotra/econome/speech-credentials.json"
+    # Look for credentials in project root
+    project_root = Path(__file__).parent.parent
+    speech_creds = project_root / "speech-credentials.json"
+    if speech_creds.exists():
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(speech_creds)
 
 import asyncio
-import sys
 import time
 from datetime import datetime
 from typing import Dict, Any
 
 # Import our production system
-from meeting_agents import ConversationIntelligenceSystem
-from speech_agent import ProductionSTTServiceV2
+from src.meeting_agents import ConversationIntelligenceSystem
+from src.speech_agent import ProductionSTTServiceV2
 
 def print_banner():
     """Print system banner"""
@@ -373,7 +382,7 @@ async def test_stt_directly(mock_mode: bool):
     
     # Create STT service with SAME settings as main system
     if mock_mode:
-        from speech_agent import MockSTTService
+        from src.speech_agent import MockSTTService
         stt = MockSTTService()
         print("🔧 Using Mock STT Service")
     else:

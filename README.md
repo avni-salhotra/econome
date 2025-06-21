@@ -12,20 +12,23 @@
 ### One-Command Deployment
 ```bash
 # 1. Setup your credentials (see setup guide)
-./setup-credentials.sh
+./scripts/setup-credentials.sh
 
 # 2. Deploy to Google Cloud
-./deploy.sh
+./scripts/deploy.sh
 ```
 
 ### Local Development
 ```bash
 # Setup local environment
-./setup-local.sh
+./scripts/setup-local.sh
 
 # Start development server
 source adk-env/bin/activate
 python web_api.py
+
+# Or run interactive demo
+python run.py
 ```
 
 **🌐 Access your app:** `http://localhost:8080`
@@ -99,34 +102,50 @@ graph TB
 ```
 econome/
 ├── 🎯 Core Application
-│   ├── main.py                 # Interactive demo & testing
-│   ├── web_api.py             # FastAPI web server
-│   ├── meeting_agents.py      # Multi-agent conversation system
-│   ├── speech_agent.py        # Google Cloud Speech V2 integration
-│   ├── gemini_agent.py        # Gemini AI processing
-│   ├── websocket_manager.py   # Real-time communication
-│   └── gcp_session_manager.py # Ephemeral session storage
+│   ├── run.py                 # Main entry point
+│   ├── web_api.py             # Web API entry point
+│   └── src/                   # Source code package
+│       ├── __init__.py        # Package initialization
+│       ├── main.py            # Interactive demo & testing
+│       ├── web_api.py         # FastAPI web server
+│       ├── meeting_agents.py  # Multi-agent conversation system
+│       ├── speech_agent.py    # Google Cloud Speech V2 integration
+│       ├── gemini_agent.py    # Gemini AI processing
+│       ├── websocket_manager.py # Real-time communication
+│       └── gcp_session_manager.py # Ephemeral session storage
+│
+├── 🧪 Testing
+│   ├── tests/                 # Test suite
+│   │   ├── __init__.py        # Test package initialization
+│   │   └── test_web_system.py # System integration tests
 │
 ├── 🌐 Frontend
 │   └── frontend/
 │       └── index.html         # Web interface
 │
-├── 🚀 Deployment
-│   ├── Dockerfile            # Container configuration
-│   ├── cloudbuild.yaml       # Google Cloud Build
-│   ├── deploy.sh             # Automated deployment script
-│   ├── setup-local.sh        # Local development setup
-│   └── setup-credentials.sh  # Credential configuration
+├── 🚀 Deployment & Scripts
+│   ├── scripts/               # Deployment and setup scripts
+│   │   ├── deploy.sh          # Automated deployment script
+│   │   ├── setup-local.sh     # Local development setup
+│   │   ├── setup-credentials.sh # Credential configuration
+│   │   └── setup.sh           # General setup script
+│   ├── Dockerfile             # Container configuration
+│   ├── cloudbuild.yaml        # Google Cloud Build
+│   └── .github/workflows/     # CI/CD automation
+│       └── deploy.yml         # GitHub Actions workflow
 │
 ├── 📚 Documentation
-│   ├── README.md             # This file
-│   ├── DEPLOYMENT_GUIDE.md   # Detailed deployment instructions
-│   └── README_WEB_UI.md      # Web interface documentation
+│   ├── README.md              # This file
+│   └── docs/                  # Documentation folder
+│       ├── DEPLOYMENT_GUIDE.md # Detailed deployment instructions
+│       ├── README_WEB_UI.md   # Web interface documentation
+│       └── SECRETS_MANAGEMENT.md # Security & secrets guide
 │
 └── ⚙️ Configuration
     ├── requirements.txt       # Python dependencies
     ├── .gitignore            # Security & exclusions
-    └── .env.example          # Environment template
+    ├── .env.example          # Environment template
+    └── service.yaml          # App Engine configuration (legacy)
 ```
 
 ---
@@ -172,9 +191,11 @@ econome/
 - Python 3.11+
 
 ### Detailed Setup
-📖 **[Complete Deployment Guide](DEPLOYMENT_GUIDE.md)** - Step-by-step instructions
+📖 **[Complete Deployment Guide](docs/DEPLOYMENT_GUIDE.md)** - Step-by-step instructions
 
-📱 **[Web UI Documentation](README_WEB_UI.md)** - Frontend setup & features
+📱 **[Web UI Documentation](docs/README_WEB_UI.md)** - Frontend setup & features
+
+🔐 **[Secrets Management Guide](docs/SECRETS_MANAGEMENT.md)** - Security best practices
 
 ---
 
@@ -254,15 +275,16 @@ The project includes automated deployment via Google Cloud Build:
 
 ```bash
 # Run comprehensive system test
-python main.py --test
+python run.py --test
 
 # Test individual components
-python test_web_system.py
-python test_gemini.py
-python test_stt_simple.py
+python -m pytest tests/
+
+# Test web system integration
+python tests/test_web_system.py
 
 # Start interactive demo
-python main.py
+python run.py
 ```
 
 ---
@@ -293,7 +315,7 @@ python main.py
 
 - **Issues**: [GitHub Issues](https://github.com/YOUR_USERNAME/econome/issues)
 - **Documentation**: See `docs/` folder
-- **Deployment Help**: Check [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md)
+- **Deployment Help**: Check [DEPLOYMENT_GUIDE.md](docs/DEPLOYMENT_GUIDE.md)
 
 ---
 
@@ -303,4 +325,4 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ---
 
-**🎉 Ready to deploy?** Run `./deploy.sh` and follow the prompts!
+**🎉 Ready to deploy?** Run `./scripts/deploy.sh` and follow the prompts!

@@ -20,10 +20,10 @@ from dataclasses import dataclass, asdict
 import os
 
 # Gemini analysis functions
-from gemini_agent import summarize_conversation, extract_action_items
+from .gemini_agent import summarize_conversation, extract_action_items
 
 # Import our STT service
-from speech_agent import ProductionSTTServiceV2, TranscriptSegment, STTStatus, create_stt_service
+from .speech_agent import ProductionSTTServiceV2, TranscriptSegment, STTStatus, create_stt_service
 
 # Google Cloud imports for other services
 from google.cloud import aiplatform
