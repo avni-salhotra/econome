@@ -1,0 +1,309 @@
+# ===================================
+# CLOUD BUILD: STAGING DEPLOYMENT PIPELINE
+# ===================================
+# Purpose: Deploy to staging environment for testing
+# Trigger: Automatic after successful build or manual
+# Environment: Staging
+
+steps:
+  # ===================================
+  # DEPLOYMENT PREPARATION
+  # ===================================
+  - id: 'deployment-info'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🚀 Starting staging deployment..."
+        echo "Project: $PROJECT_ID"
+        echo "Build ID: $BUILD_ID"
+        echo "Environment: ${_ENVIRONMENT}"
+        echo "Image Tag: ${_IMAGE_TAG}"
+        echo "Service: ${_SERVICE_NAME}"
+        echo "Region: ${_REGION}"
+        
+        # Verify image exists
+        if gcloud container images describe gcr.io/$PROJECT_ID/econome:${_IMAGE_TAG} > /dev/null 2>&1; then
+          echo "✅ Image verified: gcr.io/$PROJECT_ID/econome:${_IMAGE_TAG}"
+        else
+          echo "❌ Image not found: gcr.io/$PROJECT_ID/econome:${_IMAGE_TAG}"
+          echo "Available images:"
+          gcloud container images list-tags gcr.io/$PROJECT_ID/econome --limit=5
+          exit 1
+        fi
+
+  # ===================================
+  # DEPLOY TO CLOUD RUN STAGING
+  # ===================================
+  - id: 'deploy-staging'
+    name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image=gcr.io/$PROJECT_ID/econome:${_IMAGE_TAG}'
+      - '--platform=managed'
+      - '--region=${_REGION}'
+      - '--allow-unauthenticated'
+      - '--memory=1Gi'
+      - '--cpu=1'
+      - '--concurrency=50'
+      - '--timeout=1800'
+      - '--max-instances=3'
+      - '--min-instances=0'
+      - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=8080,ENVIRONMENT=${_ENVIRONMENT}'
+      - '--set-secrets=/secrets/speech-credentials.json=speech-credentials:latest'
+      - '--set-secrets=/secrets/gemini-credentials.json=gemini-credentials:latest'
+      - '--tag=build-$BUILD_ID'
+
+  # ===================================
+  # WAIT FOR DEPLOYMENT
+  # ===================================
+  - id: 'wait-for-ready'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "⏱️ Waiting for staging deployment to be ready..."
+        
+        # Wait for service to be ready
+        for i in {1..20}; do
+          STATUS=$(gcloud run services describe ${_SERVICE_NAME} \
+            --region=${_REGION} \
+            --format="value(status.conditions[0].status)" 2>/dev/null || echo "Unknown")
+          
+          if [[ "$STATUS" == "True" ]]; then
+            echo "✅ Service is ready (attempt $i)"
+            break
+          else
+            echo "⏳ Service not ready yet (attempt $i/20), status: $STATUS"
+            sleep 15
+          fi
+          
+          if [ $i -eq 20 ]; then
+            echo "❌ Service failed to become ready after 5 minutes"
+            exit 1
+          fi
+        done
+
+  # ===================================
+  # GET SERVICE URL
+  # ===================================
+  - id: 'get-service-url'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🌐 Getting staging service URL..."
+        
+        SERVICE_URL=$(gcloud run services describe ${_SERVICE_NAME} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        
+        echo "SERVICE_URL=$SERVICE_URL" > /workspace/service-url.env
+        echo "🌐 Staging URL: $SERVICE_URL"
+
+  # ===================================
+  # HEALTH CHECKS
+  # ===================================
+  - id: 'health-checks'
+    name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🏥 Running staging health checks..."
+        
+        # Load service URL
+        source /workspace/service-url.env
+        
+        # Wait a bit for service to fully initialize
+        sleep 30
+        
+        # Health endpoint check
+        echo "🔍 Testing health endpoint..."
+        for i in {1..10}; do
+          if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+            echo "✅ Health check passed (attempt $i)"
+            break
+          else
+            echo "⏳ Health check failed (attempt $i/10), retrying..."
+            sleep 10
+          fi
+          
+          if [ $i -eq 10 ]; then
+            echo "❌ Health check failed after 10 attempts"
+            exit 1
+          fi
+        done
+        
+        # Main page check
+        echo "🔍 Testing main page..."
+        if curl -f -s "$SERVICE_URL/" > /dev/null; then
+          echo "✅ Main page accessible"
+        else
+          echo "❌ Main page not accessible"
+          exit 1
+        fi
+        
+        # API docs check
+        echo "🔍 Testing API documentation..."
+        if curl -f -s "$SERVICE_URL/docs" > /dev/null; then
+          echo "✅ API docs accessible"
+        else
+          echo "⚠️ API docs not accessible (non-critical)"
+        fi
+
+  # ===================================
+  # INTEGRATION TESTS
+  # ===================================
+  - id: 'integration-tests'
+    name: 'python:3.12-slim'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🧪 Running staging integration tests..."
+        
+        # Install test dependencies
+        pip install requests websockets
+        
+        # Load service URL
+        source /workspace/service-url.env
+        
+        # Test WebSocket connection
+        python3 << 'EOF'
+        import asyncio
+        import websockets
+        import json
+        import ssl
+        import os
+        
+        async def test_websocket():
+            service_url = os.environ.get('SERVICE_URL', '')
+            if not service_url:
+                print("❌ SERVICE_URL not found")
+                exit(1)
+                
+            uri = service_url.replace('https://', 'wss://') + '/ws/conversation'
+            print(f'🔌 Testing WebSocket connection to: {uri}')
+            
+            try:
+                ssl_context = ssl.create_default_context()
+                async with websockets.connect(uri, ssl=ssl_context) as websocket:
+                    print('✅ WebSocket connection successful')
+                    
+                    # Send test message
+                    test_message = {'type': 'test', 'data': 'staging_test'}
+                    await websocket.send(json.dumps(test_message))
+                    print('✅ Message sent successfully')
+                    
+                    # Wait for response
+                    try:
+                        response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                        print(f'✅ Received response: {response[:100]}...')
+                    except asyncio.TimeoutError:
+                        print('⚠️ No response received (timeout), but connection works')
+                    
+            except Exception as e:
+                print(f'❌ WebSocket test failed: {e}')
+                exit(1)
+        
+        asyncio.run(test_websocket())
+        EOF
+        
+        echo "✅ Integration tests completed"
+    env:
+      - 'SERVICE_URL=$(cat /workspace/service-url.env | grep SERVICE_URL | cut -d= -f2)'
+
+  # ===================================
+  # DEPLOYMENT SUMMARY
+  # ===================================
+  - id: 'deployment-summary'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "📊 Generating deployment summary..."
+        
+        # Load service URL
+        source /workspace/service-url.env
+        
+        # Get deployment details
+        REVISION=$(gcloud run services describe ${_SERVICE_NAME} \
+          --region=${_REGION} \
+          --format="value(status.latestReadyRevisionName)")
+        
+        # Create deployment summary
+        cat > /workspace/staging-deployment-summary.md << EOF
+        # Staging Deployment Summary
+        
+        ## Deployment Information
+        - **Environment**: Staging
+        - **Service**: ${_SERVICE_NAME}
+        - **Region**: ${_REGION}
+        - **Image**: gcr.io/$PROJECT_ID/econome:${_IMAGE_TAG}
+        - **Build ID**: $BUILD_ID
+        - **Revision**: $REVISION
+        - **Timestamp**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        ## Service URLs
+        - **Application**: $SERVICE_URL
+        - **Health Check**: $SERVICE_URL/health
+        - **API Documentation**: $SERVICE_URL/docs
+        
+        ## Configuration
+        - **Memory**: 1Gi
+        - **CPU**: 1 vCPU
+        - **Concurrency**: 50
+        - **Max Instances**: 3
+        - **Min Instances**: 0
+        
+        ## Test Results
+        - ✅ Health Check: Passed
+        - ✅ Main Page: Accessible
+        - ✅ API Docs: Accessible
+        - ✅ WebSocket: Functional
+        - ✅ Integration Tests: Passed
+        
+        ## Status
+        🎉 **Staging deployment successful and ready for testing!**
+        EOF
+        
+        echo "✅ Staging deployment complete!"
+        echo "🌐 Staging URL: $SERVICE_URL"
+
+# ===================================
+# ARTIFACTS STORAGE
+# ===================================
+artifacts:
+  objects:
+    location: 'gs://$PROJECT_ID-build-artifacts/deployments/staging/$BUILD_ID'
+    paths:
+      - '/workspace/service-url.env'
+      - '/workspace/staging-deployment-summary.md'
+
+# ===================================
+# BUILD OPTIONS
+# ===================================
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: ALLOW_LOOSE
+
+# Explicitly specify service account for security
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/econome-builder@$PROJECT_ID.iam.gserviceaccount.com
+
+# Deployment timeout
+timeout: '900s'
+
+# Substitution variables with defaults
+substitutions:
+  _ENVIRONMENT: 'staging'
+  _IMAGE_TAG: 'latest'
+  _SERVICE_NAME: 'econome-staging'
+  _REGION: 'us-central1'

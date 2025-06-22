@@ -20,15 +20,18 @@
 
 ### Local Development
 ```bash
-# Setup local environment
-./scripts/setup-local.sh
+# Clone and setup
+git clone https://github.com/avni-salhotra/econome.git
+cd econome
+pip install -r requirements.txt
+
+# Configure environment
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export MOCK_MODE=true
 
 # Start development server
-source adk-env/bin/activate
-python web_api.py
-
-# Or run interactive demo
-python run.py
+cd src
+python main.py
 ```
 
 **🌐 Access your app:** `http://localhost:8080`
@@ -63,17 +66,27 @@ graph TB
     style SM fill:#ffebee
 ```
 
-### **CI/CD Pipeline**
+### **Enhanced CI/CD Pipeline**
 ```mermaid
 graph LR
-    A[Code Push] --> B[GitHub Actions CI]
-    B --> C[Build & Test]
-    C --> D[Push to Registry]
-    D --> E[Manual Deploy Decision]
-    E --> F[Backend Deploy]
-    E --> G[Frontend Deploy]
-    F --> H[Backend Cloud Run]
-    G --> I[Frontend Cloud Run]
+    A[Code Push] --> B[01-Test & Validate]
+    B --> C[02-Build & Push]
+    C --> D[03-Deploy Staging]
+    D --> E[Manual Approval]
+    E --> F[04-Deploy Production]
+    F --> G[99-Manual Operations]
+
+    B --> B1[Unit Tests]
+    B --> B2[Security Scan]
+    B --> B3[Integration Tests]
+
+    C --> C1[Build Image]
+    C --> C2[Push to GCR]
+    C --> C3[Tag Images]
+
+    D --> D1[Deploy Staging]
+    D --> D2[E2E Tests]
+    D --> D3[Health Checks]
 ```
 
 ### 🔧 Technology Stack
