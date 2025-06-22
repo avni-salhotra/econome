@@ -29,6 +29,6 @@ images:
 options:
   logging: CLOUD_LOGGING_ONLY
   machineType: 'E2_HIGHCPU_8'
-  serviceAccount: econome-builder@econome-hackathon.iam.gserviceaccount.com
 
+serviceAccount: econome-builder@econome-hackathon.iam.gserviceaccount.com
 timeout: '900s'

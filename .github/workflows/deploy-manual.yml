@@ -30,7 +30,7 @@ jobs:
     environment: ${{ github.event.inputs.environment }}
     
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: econome-hackathon
       SERVICE_NAME: econome
       REGION: us-central1
       ENVIRONMENT: ${{ github.event.inputs.environment }}
@@ -44,7 +44,7 @@ jobs:
       uses: google-github-actions/auth@v2
       with:
         credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        project_id: econome-hackathon
 
     - name: Set up Google Cloud CLI
       uses: google-github-actions/setup-gcloud@v2
