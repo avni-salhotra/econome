@@ -245,108 +245,180 @@ async def simulate_conversation():
 # WebSocket endpoint for real-time conversation
 @app.websocket("/ws/conversation")
 async def conversation_websocket(websocket: WebSocket):
-    """Real-time conversation processing with WebSocket"""
-    connection_id = await websocket_manager.connect(websocket)
+    """
+    WebSocket endpoint for real-time conversation intelligence
+    """
+    connection_id = None
+    conversation_system = None
     
     try:
-        logger.info(f"🔗 New conversation session: {connection_id}")
+        # Accept connection and get ID
+        connection_id = await websocket_manager.connect(websocket)
+        
+        # 🔍 CRITICAL DEBUG: WebSocket connection established
+        connection_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "websocket_state": "connected",
+            "client_host": websocket.client.host if websocket.client else "unknown",
+            "client_port": websocket.client.port if websocket.client else "unknown"
+        }
+        logger.info(f"🔗 DEBUG_WEBSOCKET_CONNECTED: {connection_debug}")
         
         # Initialize conversation system for this connection
-        conversation_system = ConversationIntelligenceSystem(
-            mock_mode=False,  # Production mode with GCP
-            chunk_duration=2.0,
-            project_id=os.getenv("GOOGLE_CLOUD_PROJECT")
-        )
-        
-        # Store active conversation
+        conversation_system = ConversationIntelligenceSystem()
         active_conversations[connection_id] = conversation_system
         
-        # Store the main event loop for thread-safe communication
-        main_loop = asyncio.get_running_loop()
-
-        # Start the multi-agent system FIRST
-        session_id = await conversation_system.start_system()
-
-        # Get the STT agent and its original callback
-        stt_agent = conversation_system.get_agent("stt")
-        original_callback = None
-        if stt_agent and hasattr(stt_agent, '_on_transcript_segment'):
-            original_callback = stt_agent._on_transcript_segment
-
-        # FIXED: Real-time transcript callback that calls BOTH the original STT agent callback AND sends to WebSocket
+        # Set up transcript callback for real-time updates
         def transcript_callback(segment):
-            """Callback for live transcription updates - CALLS BOTH STT AGENT AND WEBSOCKET"""
-            # FIRST: Call the original STT agent callback to collect transcripts
-            if original_callback:
-                try:
-                    original_callback(segment)
-                except Exception as e:
-                    print(f"⚠️ Error in original STT callback: {e}")
-
-            # SECOND: Send to frontend via WebSocket (thread-safe)
+            """Forward transcript segments to WebSocket client"""
             try:
-                # Schedule the coroutine to run in the main event loop from this thread
-                asyncio.run_coroutine_threadsafe(
-                    websocket_manager.send_to_connection(connection_id, {
+                # 🔍 DEBUG: Transcript callback triggered
+                transcript_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "segment": {
+                        "text": segment.text,
+                        "speaker_id": segment.speaker_id,
+                        "confidence": segment.confidence,
+                        "is_final": segment.is_final,
+                        "chunk_id": segment.chunk_id
+                    }
+                }
+                logger.debug(f"📝 DEBUG_TRANSCRIPT_CALLBACK: {transcript_debug}")
+                
+                asyncio.create_task(websocket_manager.send_to_connection(
+                    connection_id,
+                    {
                         "type": "live_transcript",
                         "text": segment.text,
-                        "confidence": segment.confidence,
                         "speaker_id": segment.speaker_id,
-                        "timestamp": segment.timestamp.isoformat()
-                    }),
-                    main_loop
-                )
+                        "confidence": segment.confidence,
+                        "is_final": segment.is_final,
+                        "timestamp": segment.timestamp.isoformat(),
+                        "chunk_id": segment.chunk_id
+                    }
+                ))
             except Exception as e:
-                print(f"⚠️ Failed to send live transcript to WebSocket: {e}")
-                # Fallback: just log the transcript
-                print(f"📝 [FALLBACK] {segment.speaker_id}: {segment.text}")
-
-        # Connect the combined callback to STT service
+                logger.error(f"❌ Error in transcript callback: {e}")
+        
+        # Register callback with STT agent
+        stt_agent = conversation_system.get_agent("stt")
         if stt_agent and hasattr(stt_agent, 'stt_service'):
             stt_agent.stt_service.set_transcript_callback(transcript_callback)
+            logger.info(f"✅ Transcript callback registered for {connection_id}")
+        else:
+            logger.warning(f"⚠️ STT agent not available for {connection_id}")
         
-        await websocket_manager.send_to_connection(connection_id, {
-            "type": "system_ready",
-            "session_id": session_id,
+        # 🔍 CRITICAL DEBUG: Conversation system initialized
+        system_debug = {
+            "timestamp": datetime.now().isoformat(),
             "connection_id": connection_id,
-            "message": "Multi-agent conversation system initialized and ready"
-        })
+            "system_id": conversation_system.session_id,
+            "stt_agent_available": stt_agent is not None,
+            "stt_service_available": hasattr(stt_agent, 'stt_service') if stt_agent else False
+        }
+        logger.info(f"🧠 DEBUG_CONVERSATION_SYSTEM_INIT: {system_debug}")
         
-        # Message handling loop
+        # WebSocket message loop
         while True:
-            # Receive commands from frontend
-            data = await websocket.receive_text()
-            command = json.loads(data)
-            
-            await handle_websocket_command(connection_id, command, conversation_system)
-            
-    except WebSocketDisconnect:
-        logger.info(f"🔌 WebSocket disconnected: {connection_id}")
-    except Exception as e:
-        logger.error(f"❌ WebSocket error for {connection_id}: {e}")
-        await websocket_manager.send_to_connection(connection_id, {
-            "type": "error",
-            "message": f"System error: {str(e)}",
-            "timestamp": datetime.now().isoformat()
-        })
-    finally:
-        # Clean up
-        if connection_id in active_conversations:
             try:
-                active_conversations[connection_id].stop_system()
-                del active_conversations[connection_id]
-                logger.info(f"🧹 Cleaned up conversation system: {connection_id}")
+                # Receive message from client
+                data = await websocket.receive_text()
+                
+                # 🔍 DEBUG: Raw message received
+                message_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "message_length": len(data),
+                    "message_preview": data[:200] + "..." if len(data) > 200 else data
+                }
+                logger.debug(f"📨 DEBUG_WEBSOCKET_MESSAGE_RECEIVED: {message_debug}")
+                
+                try:
+                    message = json.loads(data)
+                    
+                    # 🔍 CRITICAL DEBUG: Parsed message analysis
+                    parsed_debug = {
+                        "timestamp": datetime.now().isoformat(),
+                        "connection_id": connection_id,
+                        "action": message.get("action"),
+                        "message_keys": list(message.keys()),
+                        "audio_data_length": len(message.get("audio_data", "")) if "audio_data" in message else 0
+                    }
+                    logger.info(f"🔍 DEBUG_WEBSOCKET_MESSAGE_PARSED: {parsed_debug}")
+                    
+                    # Handle the message
+                    await handle_websocket_command(connection_id, message, conversation_system)
+                    
+                except json.JSONDecodeError as e:
+                    logger.error(f"❌ Invalid JSON message from {connection_id}: {e}")
+                    await websocket_manager.send_to_connection(connection_id, {
+                        "type": "error",
+                        "message": "Invalid JSON format"
+                    })
+                    
+            except WebSocketDisconnect:
+                logger.info(f"🔌 WebSocket disconnected: {connection_id}")
+                break
             except Exception as e:
-                logger.error(f"❌ Cleanup error for {connection_id}: {e}")
-        
-        # Clean up WebM chunk buffer for this connection
-        try:
-            from .webm_muxer import cleanup_buffer
-            cleanup_buffer(connection_id)
-        except Exception as e:
-            logger.error(f"❌ WebM buffer cleanup error for {connection_id}: {e}")
-        
-        websocket_manager.disconnect(connection_id)
+                logger.error(f"❌ Error in WebSocket loop for {connection_id}: {e}")
+                # Send error to client but continue listening
+                try:
+                    await websocket_manager.send_to_connection(connection_id, {
+                        "type": "error",
+                        "message": f"Server error: {str(e)}"
+                    })
+                except:
+                    # If we can't send the error, the connection is probably dead
+                    break
+    
+    except Exception as e:
+        logger.error(f"❌ WebSocket connection error: {e}")
+        # 🔍 DEBUG: Connection error analysis
+        error_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e)
+            }
+        }
+        logger.error(f"🔍 DEBUG_WEBSOCKET_CONNECTION_ERROR: {error_debug}")
+    
+    finally:
+        # Cleanup on disconnect
+        if connection_id:
+            # 🔍 CRITICAL DEBUG: Connection cleanup
+            cleanup_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "had_conversation_system": conversation_system is not None
+            }
+            logger.info(f"🧹 DEBUG_WEBSOCKET_CLEANUP_START: {cleanup_debug}")
+            
+            websocket_manager.disconnect(connection_id)
+            
+            if conversation_system:
+                try:
+                    conversation_system.stop_system()
+                    logger.info(f"🛑 Stopped conversation system for {connection_id}")
+                except Exception as e:
+                    logger.error(f"❌ Error stopping conversation system for {connection_id}: {e}")
+            
+            # Remove from active conversations
+            if connection_id in active_conversations:
+                del active_conversations[connection_id]
+                logger.info(f"🧹 Removed {connection_id} from active conversations")
+            
+            # 🔍 FINAL DEBUG: Cleanup completed
+            final_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "cleanup_completed": True,
+                "active_conversations_remaining": len(active_conversations)
+            }
+            logger.info(f"✅ DEBUG_WEBSOCKET_CLEANUP_COMPLETED: {cleanup_debug}")
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
     """
@@ -362,46 +434,170 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
     3. Enhanced error handling and debugging
     """
     try:
+        # 🔍 CRITICAL DEBUG: Function entry point
+        entry_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "conversation_system_id": getattr(conversation_system, 'session_id', None)
+        }
+        logger.info(f"🚀 DEBUG_START_FRONTEND_STREAMING_ENTRY: {entry_debug}")
+
         # Start the conversation system but skip backend audio recording
         session_id = conversation_system.session_id or f"frontend_session_{int(time.time())}"
 
+        # 🔍 CRITICAL DEBUG: Pre-initialization state
+        pre_init_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "session_id": session_id,
+            "conversation_system_available": conversation_system is not None
+        }
+        logger.info(f"🔍 DEBUG_FRONTEND_STREAMING_PRE_INIT: {pre_init_debug}")
+
         # Initialize STT agent for processing but don't start backend recording
         stt_agent = conversation_system.get_agent("stt")
+        
+        # 🔍 CRITICAL DEBUG: STT agent availability
+        stt_agent_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "stt_agent_available": stt_agent is not None,
+            "stt_agent_type": type(stt_agent).__name__ if stt_agent else None,
+            "has_stt_service": hasattr(stt_agent, 'stt_service') if stt_agent else False
+        }
+        logger.info(f"🔍 DEBUG_STT_AGENT_AVAILABILITY: {stt_agent_debug}")
+
         if stt_agent and hasattr(stt_agent, 'stt_service'):
             # Use proper interface for frontend streaming initialization
             stt_service = stt_agent.stt_service
+            
+            # 🔍 CRITICAL DEBUG: STT service pre-initialization state
+            pre_service_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "stt_service_type": type(stt_service).__name__,
+                "is_recording": getattr(stt_service, '_is_recording', 'unknown'),
+                "has_audio_queue": hasattr(stt_service, '_audio_queue'),
+                "processing_thread_exists": hasattr(stt_service, '_processing_thread'),
+                "processing_thread_alive": (hasattr(stt_service, '_processing_thread') and 
+                                          stt_service._processing_thread and 
+                                          stt_service._processing_thread.is_alive()) if hasattr(stt_service, '_processing_thread') else False
+            }
+            logger.info(f"🔍 DEBUG_STT_SERVICE_PRE_INIT: {pre_service_debug}")
+
+            # Initialize frontend streaming
+            logger.info(f"🎵 Initializing STT service for frontend streaming (connection: {connection_id})")
             init_result = stt_service.initialize_frontend_streaming()
+
+            # 🔍 CRITICAL DEBUG: STT service initialization result
+            init_result_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "init_result": init_result,
+                "success": init_result.get("success") if init_result else False
+            }
+            logger.info(f"🔧 DEBUG_STT_SERVICE_INIT_RESULT: {init_result_debug}")
 
             if init_result.get("success"):
                 logger.info("🎵 STT service initialized for frontend streaming")
                 logger.debug(f"🔍 Initialization result: {init_result}")
+                
+                # 🔍 CRITICAL DEBUG: Post-initialization state verification
+                post_init_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "is_recording": getattr(stt_service, '_is_recording', 'unknown'),
+                    "session_start_time": getattr(stt_service, '_session_start_time', None),
+                    "processing_thread_alive": (hasattr(stt_service, '_processing_thread') and 
+                                              stt_service._processing_thread and 
+                                              stt_service._processing_thread.is_alive()) if hasattr(stt_service, '_processing_thread') else False,
+                    "audio_queue_size": stt_service._audio_queue.qsize() if hasattr(stt_service, '_audio_queue') else 'N/A',
+                    "chunk_counter": getattr(stt_service, '_chunk_counter', 'unknown')
+                }
+                logger.info(f"✅ DEBUG_STT_SERVICE_POST_INIT_SUCCESS: {post_init_debug}")
+                
             else:
                 logger.error(f"❌ Failed to initialize STT service for frontend streaming: {init_result.get('message')}")
+                
+                # 🔍 CRITICAL DEBUG: Initialization failure analysis
+                failure_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "failure_message": init_result.get('message'),
+                    "init_result": init_result,
+                    "stt_service_state": {
+                        "is_recording": getattr(stt_service, '_is_recording', 'unknown'),
+                        "has_processing_thread": hasattr(stt_service, '_processing_thread'),
+                        "has_audio_queue": hasattr(stt_service, '_audio_queue')
+                    }
+                }
+                logger.error(f"🔍 DEBUG_STT_INIT_FAILURE: {failure_debug}")
+                
                 return {
                     "success": False,
                     "message": f"STT initialization failed: {init_result.get('message')}",
-                    "mode": "frontend_streaming"
+                    "mode": "frontend_streaming",
+                    "debug_info": failure_debug
                 }
         else:
             logger.error("❌ STT agent or STT service not available for frontend streaming initialization")
+            
+            # 🔍 CRITICAL DEBUG: STT agent/service not available
+            unavailable_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "stt_agent_is_none": stt_agent is None,
+                "stt_agent_has_service": hasattr(stt_agent, 'stt_service') if stt_agent else False,
+                "stt_agent_type": type(stt_agent).__name__ if stt_agent else None,
+                "conversation_system_agents": [agent_name for agent_name in conversation_system._agents.keys()] if hasattr(conversation_system, '_agents') else []
+            }
+            logger.error(f"🔍 DEBUG_STT_UNAVAILABLE: {unavailable_debug}")
+            
             return {
                 "success": False,
                 "message": "STT agent or service not available",
-                "mode": "frontend_streaming"
+                "mode": "frontend_streaming",
+                "debug_info": unavailable_debug
             }
+
+        # 🔍 SUCCESS: Frontend streaming mode initialized
+        success_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "session_id": session_id,
+            "mode": "frontend_streaming",
+            "stt_initialized": True
+        }
+        logger.info(f"✅ DEBUG_FRONTEND_STREAMING_SUCCESS: {success_debug}")
 
         return {
             "success": True,
             "message": "Frontend streaming mode initialized",
             "session_id": session_id,
-            "mode": "frontend_streaming"
+            "mode": "frontend_streaming",
+            "debug_info": success_debug
         }
 
     except Exception as e:
         logger.error(f"❌ Error starting frontend streaming mode: {e}")
+        
+        # 🔍 CRITICAL DEBUG: Exception analysis
+        exception_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e),
+                "traceback": str(e.__traceback__) if hasattr(e, '__traceback__') else None
+            },
+            "conversation_system_available": conversation_system is not None
+        }
+        logger.error(f"🔍 DEBUG_FRONTEND_STREAMING_EXCEPTION: {exception_debug}")
+        
         return {
             "success": False,
-            "message": f"Failed to start frontend streaming: {str(e)}"
+            "message": f"Failed to start frontend streaming: {str(e)}",
+            "debug_info": exception_debug
         }
 
 async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime_type: str, conversation_system: ConversationIntelligenceSystem):
@@ -819,6 +1015,17 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
     """Handle WebSocket commands from frontend"""
     action = command.get("action")
 
+    # 🔍 CRITICAL DEBUG: Command handling entry point
+    command_debug = {
+        "timestamp": datetime.now().isoformat(),
+        "connection_id": connection_id,
+        "action": action,
+        "command_keys": list(command.keys()),
+        "has_audio_data": "audio_data" in command,
+        "audio_data_length": len(command.get("audio_data", "")) if "audio_data" in command else 0
+    }
+    logger.info(f"🔧 DEBUG_WEBSOCKET_COMMAND: {command_debug}")
+
     try:
         if action == "start_recording":
             # Handle both Safari and standard browsers with frontend or backend mode
@@ -826,14 +1033,43 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             mode = command.get("mode", "backend")
             streaming = command.get("streaming", False)
 
+            # 🔍 CRITICAL DEBUG: Start recording request analysis
+            start_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "browser": browser,
+                "mode": mode,
+                "streaming": streaming,
+                "sample_rate": command.get("sample_rate"),
+                "channels": command.get("channels"),
+                "environment": command.get("environment")
+            }
+            logger.info(f"🎤 DEBUG_START_RECORDING_REQUEST: {start_debug}")
+
             logger.info(f"🎤 Starting recording for {browser} browser (mode: {mode}, streaming: {streaming})")
 
             if mode == "frontend_streaming":
                 # Frontend streaming mode - initialize STT agent for real-time processing
                 result = await start_frontend_streaming_mode(connection_id, conversation_system)
+                
+                # 🔍 DEBUG: Frontend streaming initialization result
+                streaming_result_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "result": result
+                }
+                logger.info(f"🔧 DEBUG_FRONTEND_STREAMING_RESULT: {streaming_result_debug}")
             else:
                 # Backend microphone mode (fallback)
                 result = conversation_system.start_conversation()
+                
+                # 🔍 DEBUG: Backend recording result
+                backend_result_debug = {
+                    "timestamp": datetime.now().isoformat(),
+                    "connection_id": connection_id,
+                    "result": result
+                }
+                logger.info(f"🖥️ DEBUG_BACKEND_RECORDING_RESULT: {backend_result_debug}")
 
             # Enhanced response with debugging information and cloud mode detection
             from src.speech_agent import AUDIO_AVAILABLE, CLOUD_RUN_MODE
@@ -877,6 +1113,17 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                         }
                     })
 
+            # 🔍 CRITICAL DEBUG: Response data analysis
+            response_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "response_type": response_data["type"],
+                "success": response_data["success"],
+                "environment": response_data["environment"],
+                "debug_info": response_data.get("debug_info")
+            }
+            logger.info(f"📤 DEBUG_START_RECORDING_RESPONSE: {response_debug}")
+
             await websocket_manager.send_to_connection(connection_id, response_data)
 
             if result.get("success"):
@@ -889,82 +1136,141 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             # Handle real-time audio chunks from frontend
             audio_data = command.get("audio_data")
             mime_type = command.get("mime_type", "audio/webm")
+            timestamp = command.get("timestamp", datetime.now().timestamp() * 1000)
+
+            # 🔍 CRITICAL DEBUG: Audio chunk received analysis
+            chunk_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "audio_data_length": len(audio_data) if audio_data else 0,
+                "mime_type": mime_type,
+                "chunk_timestamp": timestamp,
+                "time_since_chunk": datetime.now().timestamp() * 1000 - timestamp if timestamp else 0
+            }
+            logger.debug(f"🎵 DEBUG_AUDIO_CHUNK_RECEIVED: {chunk_debug}")
 
             if audio_data:
+                # 🔍 VALIDATION: Check STT service state before processing
+                stt_agent = conversation_system.get_agent("stt")
+                if stt_agent and hasattr(stt_agent, 'stt_service'):
+                    stt_service = stt_agent.stt_service
+                    stt_state_debug = {
+                        "timestamp": datetime.now().isoformat(),
+                        "connection_id": connection_id,
+                        "stt_is_recording": getattr(stt_service, '_is_recording', False),
+                        "stt_session_start": getattr(stt_service, '_session_start_time', None),
+                        "processing_thread_alive": hasattr(stt_service, '_processing_thread') and 
+                                                  stt_service._processing_thread and 
+                                                  stt_service._processing_thread.is_alive(),
+                        "audio_queue_size": stt_service._audio_queue.qsize() if hasattr(stt_service, '_audio_queue') else "N/A"
+                    }
+                    logger.debug(f"🔍 DEBUG_STT_STATE_BEFORE_CHUNK: {stt_state_debug}")
+                else:
+                    logger.error(f"❌ CRITICAL: STT service not available for audio chunk processing (connection: {connection_id})")
+
                 # Process the audio chunk through the conversation system
-                await process_frontend_audio_chunk(connection_id, audio_data, mime_type, conversation_system)
+                try:
+                    await process_frontend_audio_chunk(connection_id, audio_data, mime_type, conversation_system)
+                    
+                    # 🔍 SUCCESS: Audio chunk processed
+                    process_success_debug = {
+                        "timestamp": datetime.now().isoformat(),
+                        "connection_id": connection_id,
+                        "chunk_processed": True,
+                        "audio_data_length": len(audio_data)
+                    }
+                    logger.debug(f"✅ DEBUG_AUDIO_CHUNK_PROCESSED: {process_success_debug}")
+                    
+                except Exception as chunk_error:
+                    # 🔍 ERROR: Audio chunk processing failed
+                    process_error_debug = {
+                        "timestamp": datetime.now().isoformat(),
+                        "connection_id": connection_id,
+                        "chunk_processed": False,
+                        "error": {
+                            "type": type(chunk_error).__name__,
+                            "message": str(chunk_error)
+                        },
+                        "audio_data_length": len(audio_data)
+                    }
+                    logger.error(f"❌ DEBUG_AUDIO_CHUNK_ERROR: {process_error_debug}")
+                    raise chunk_error
+            else:
+                logger.warning(f"⚠️ Empty audio data received from {connection_id}")
 
         elif action == "stop_recording":
+            # 🔍 DEBUG: Stop recording request
+            stop_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id
+            }
+            logger.info(f"🛑 DEBUG_STOP_RECORDING_REQUEST: {stop_debug}")
+
+            # Stop the conversation recording
+            logger.info(f"🛑 Stopping recording for {connection_id}")
+            result = conversation_system.stop_conversation()
+
+            # Send response
             await websocket_manager.send_to_connection(connection_id, {
-                "type": "processing",
-                "message": "Stopping recording and running parallel Gemini analysis...",
+                "type": "recording_stopped",
+                "success": result.get("success", True),
+                "message": result.get("message", "Recording stopped"),
+                "session_duration": result.get("session_duration", 0),
+                "chunks_processed": result.get("chunks_processed", 0),
                 "timestamp": datetime.now().isoformat()
             })
 
-            # Broadcast processing update
-            await websocket_manager.broadcast_processing_update(
-                "analysis",
-                message="Running parallel Gemini processing (Summary + Action Items)..."
-            )
+            if result.get("success", True):
+                await websocket_manager.broadcast_system_status(
+                    "processing",
+                    f"Processing conversation for session {connection_id[:8]}..."
+                )
 
-            # Use existing stop_conversation method (async)
-            results = await conversation_system.stop_conversation()
-
-            # Create ephemeral session for results
-            token = await session_manager.create_session(
-                summary=results.get("gemini_summary", ""),
-                action_items=results.get("action_items", []),
-                session_metadata={
-                    "connection_id": connection_id,
-                    "session_id": results.get("session_id"),
-                    "duration": results.get("duration_formatted"),
-                    "total_chunks": results.get("total_transcript_chunks", 0)
-                }
-            )
-
-            # Construct ephemeral URL (update with your actual domain)
-            base_url = os.getenv("BASE_URL", "http://localhost:8080")
-            ephemeral_url = f"{base_url}/results/{token}"
-
-            # Send complete results to this connection
-            await websocket_manager.send_analysis_results(connection_id, {
-                "summary": results.get("gemini_summary"),
-                "action_items": results.get("action_items", []),
-                "total_action_items": results.get("total_action_items", 0),
-                "session_id": results.get("session_id"),
-                "duration": results.get("duration_formatted"),
-                "total_transcript_chunks": results.get("total_transcript_chunks", 0),
-                "full_transcript": results.get("full_transcript", "")
-            }, ephemeral_url)
-
-            # Broadcast completion
-            await websocket_manager.broadcast_system_status(
-                "complete",
-                f"Analysis complete for session {connection_id[:8]}..."
-            )
-        
         elif action == "get_status":
-            # Get current system status
-            status = conversation_system.get_live_status()
-            
+            # Get system status
+            status = conversation_system.get_conversation_status()
             await websocket_manager.send_to_connection(connection_id, {
-                "type": "status_response",
+                "type": "status_update",
                 "status": status,
                 "timestamp": datetime.now().isoformat()
             })
-        
+
         else:
+            # 🔍 DEBUG: Unknown action
+            unknown_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "unknown_action": action,
+                "all_keys": list(command.keys())
+            }
+            logger.warning(f"⚠️ DEBUG_UNKNOWN_ACTION: {unknown_debug}")
+
             await websocket_manager.send_to_connection(connection_id, {
                 "type": "error",
                 "message": f"Unknown action: {action}",
                 "timestamp": datetime.now().isoformat()
             })
-    
+
     except Exception as e:
-        logger.error(f"❌ Command handling error for {connection_id}: {e}")
+        logger.error(f"❌ Error handling command {action} for {connection_id}: {e}")
+        
+        # 🔍 CRITICAL DEBUG: Command handling error analysis
+        error_debug = {
+            "timestamp": datetime.now().isoformat(),
+            "connection_id": connection_id,
+            "action": action,
+            "error": {
+                "type": type(e).__name__,
+                "message": str(e)
+            },
+            "command_keys": list(command.keys())
+        }
+        logger.error(f"🔍 DEBUG_COMMAND_ERROR: {error_debug}")
+        
         await websocket_manager.send_to_connection(connection_id, {
             "type": "error",
-            "message": f"Error executing {action}: {str(e)}",
+            "message": f"Command error: {str(e)}",
+            "action": action,
             "timestamp": datetime.now().isoformat()
         })
 
