@@ -216,7 +216,7 @@ deploy_service() {
             --concurrency=100 \
             --timeout=3600 \
             --max-instances=10 \
-            --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=8080" \
+            --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,ENVIRONMENT=$ENVIRONMENT" \
             --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
             --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest"
     else

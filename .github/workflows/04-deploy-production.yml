@@ -185,7 +185,7 @@ jobs:
           --timeout=3600 \
           --max-instances=10 \
           --min-instances=1 \
-          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},PORT=8080,ENVIRONMENT=${{ env.ENVIRONMENT }}" \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=${{ env.ENVIRONMENT }}" \
           --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
           --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
           --tag="prod-${{ github.run_id }}" \
