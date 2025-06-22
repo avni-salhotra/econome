@@ -128,6 +128,8 @@ class ProductionSTTServiceV2:
 
         self.project_id = project_id
         self.max_queue_size = 10
+        self.queue_warning_threshold = 8  # Warn when queue is 80% full
+        self.queue_cleanup_interval = 30  # Clean up old chunks every 30 seconds
 
         self._initialize_speech_client(credentials_path)
 
@@ -136,6 +138,7 @@ class ProductionSTTServiceV2:
         self._session_start_time = None
         self._chunk_counter = 0
         self._segments = []
+        self._last_queue_cleanup = time.time()
 
         self._recording_thread = None
         self._processing_thread = None
@@ -227,6 +230,8 @@ class ProductionSTTServiceV2:
     def _process_audio_chunks(self) -> None:
         """Process audio chunks with Google Speech V2"""
         print("🔄 Audio processing thread started")
+        chunk_count = 0
+
         while self._is_recording:
             try:
                 # Get audio chunk with timeout
@@ -239,9 +244,16 @@ class ProductionSTTServiceV2:
 
                 # Process the chunk
                 self._transcribe_chunk(audio_chunk)
+                chunk_count += 1
+
+                # Perform queue health management every 10 chunks
+                if chunk_count % 10 == 0:
+                    self._manage_queue_health()
 
             except queue.Empty:
                 # Timeout is normal, just continue checking
+                # Use this opportunity to check queue health
+                self._manage_queue_health()
                 continue
             except Exception as e:
                 print(f"❌ Audio processing error: {e}")
@@ -572,7 +584,165 @@ class ProductionSTTServiceV2:
             print("🧹 Audio buffers cleared")
         except Exception as e:
             print(f"⚠️ Error clearing buffers: {e}")
-    
+
+    def initialize_frontend_streaming(self) -> Dict[str, Any]:
+        """
+        Initialize the STT service for frontend streaming mode
+
+        This provides a proper interface for frontend streaming initialization
+        instead of direct property access from web_api.py
+        """
+        try:
+            # Initialize state for frontend streaming
+            self._is_recording = True
+            self._session_start_time = time.time()
+            self._chunk_counter = 0
+            self._segments.clear()
+
+            # Clear any existing audio queue
+            while not self._audio_queue.empty():
+                try:
+                    self._audio_queue.get_nowait()
+                except queue.Empty:
+                    break
+
+            # Start processing thread if not already running (with proper synchronization)
+            if self._processing_thread is None or not self._processing_thread.is_alive():
+                import threading
+                import time
+
+                self._processing_thread = threading.Thread(
+                    target=self._process_audio_chunks,
+                    daemon=True
+                )
+                self._processing_thread.start()
+
+                # Wait briefly to ensure thread is properly started
+                time.sleep(0.1)
+
+                # Verify thread started successfully
+                if not self._processing_thread.is_alive():
+                    raise Exception("Failed to start audio processing thread")
+
+            return {
+                "success": True,
+                "message": "Frontend streaming mode initialized",
+                "is_recording": self._is_recording,
+                "processing_thread_active": self._processing_thread.is_alive(),
+                "audio_queue_size": self._audio_queue.qsize()
+            }
+
+        except Exception as e:
+            return {
+                "success": False,
+                "message": f"Failed to initialize frontend streaming: {str(e)}",
+                "error": str(e)
+            }
+
+    def queue_audio_chunk(self, audio_array: np.ndarray) -> bool:
+        """
+        Queue an audio chunk for processing
+
+        Provides a proper interface for adding audio chunks instead of
+        direct access to _audio_queue from web_api.py
+        """
+        try:
+            if not self._is_recording:
+                print("⚠️ Cannot queue audio chunk - not recording")
+                return False
+
+            # Ensure processing thread is running
+            if self._processing_thread is None or not self._processing_thread.is_alive():
+                print("⚠️ Processing thread not running - cannot queue audio chunk")
+                return False
+
+            if not self._audio_queue.full():
+                self._audio_queue.put(audio_array, block=False)
+                return True
+            else:
+                # Queue is full, remove oldest and add new (with timeout for safety)
+                try:
+                    self._audio_queue.get_nowait()
+                    self._audio_queue.put(audio_array, block=False)
+                    print("⚠️ Audio queue was full - dropped oldest chunk")
+                    return True
+                except queue.Empty:
+                    print("❌ Audio queue management failed")
+                    return False
+
+        except Exception as e:
+            print(f"❌ Error queuing audio chunk: {e}")
+            return False
+
+    def _manage_queue_health(self) -> None:
+        """
+        Manage audio queue health and perform cleanup
+
+        This method monitors queue size and performs periodic cleanup
+        to prevent memory issues and ensure optimal performance
+        """
+        try:
+            current_time = time.time()
+            queue_size = self._audio_queue.qsize()
+
+            # Check if queue is getting full
+            if queue_size >= self.queue_warning_threshold:
+                print(f"⚠️ Audio queue warning: {queue_size}/{self.max_queue_size} chunks")
+
+                # If queue is critically full, drop some old chunks
+                if queue_size >= self.max_queue_size - 1:
+                    chunks_to_drop = max(1, queue_size // 4)  # Drop 25% of queue
+                    for _ in range(chunks_to_drop):
+                        try:
+                            self._audio_queue.get_nowait()
+                        except queue.Empty:
+                            break
+                    print(f"🧹 Dropped {chunks_to_drop} old audio chunks to prevent overflow")
+
+            # Periodic cleanup
+            if current_time - self._last_queue_cleanup > self.queue_cleanup_interval:
+                self._last_queue_cleanup = current_time
+
+                # Log queue statistics
+                print(f"📊 Queue stats: {queue_size}/{self.max_queue_size} chunks, "
+                      f"{self._chunk_counter} total processed")
+
+                # Clean up old segments if too many accumulated
+                if len(self._segments) > 1000:  # Keep last 1000 segments
+                    old_segments = self._segments[:-500]  # Keep last 500
+                    self._segments = self._segments[-500:]
+                    print(f"🧹 Cleaned up {len(old_segments)} old transcript segments")
+
+        except Exception as e:
+            print(f"❌ Error in queue health management: {e}")
+
+    def get_queue_stats(self) -> Dict[str, Any]:
+        """Get detailed queue statistics for monitoring"""
+        try:
+            queue_size = self._audio_queue.qsize()
+            queue_health = "healthy"
+
+            if queue_size >= self.max_queue_size:
+                queue_health = "critical"
+            elif queue_size >= self.queue_warning_threshold:
+                queue_health = "warning"
+
+            return {
+                "queue_size": queue_size,
+                "max_queue_size": self.max_queue_size,
+                "queue_health": queue_health,
+                "queue_utilization": queue_size / self.max_queue_size,
+                "total_chunks_processed": self._chunk_counter,
+                "total_segments": len(self._segments),
+                "last_cleanup": self._last_queue_cleanup,
+                "is_recording": self._is_recording
+            }
+        except Exception as e:
+            return {
+                "error": f"Failed to get queue stats: {e}",
+                "queue_health": "unknown"
+            }
+
     def get_status(self) -> STTStatus:
         """Get current service status"""
         session_duration = 0

@@ -361,26 +361,27 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
         # Initialize STT agent for processing but don't start backend recording
         stt_agent = conversation_system.get_agent("stt")
         if stt_agent and hasattr(stt_agent, 'stt_service'):
-            # Prepare STT service for frontend streaming (without starting backend audio)
+            # Use proper interface for frontend streaming initialization
             stt_service = stt_agent.stt_service
-            stt_service._is_recording = True
-            stt_service._session_start_time = time.time()
-            stt_service._chunk_counter = 0
-            stt_service._segments.clear()
+            init_result = stt_service.initialize_frontend_streaming()
 
-            # Start the processing thread to handle incoming audio chunks
-            if hasattr(stt_service, '_processing_thread') and stt_service._processing_thread is None:
-                import threading
-                stt_service._processing_thread = threading.Thread(
-                    target=stt_service._process_audio_chunks,
-                    daemon=True
-                )
-                stt_service._processing_thread.start()
-                logger.info("🎵 Started STT processing thread for frontend streaming")
+            if init_result.get("success"):
+                logger.info("🎵 STT service initialized for frontend streaming")
+                logger.debug(f"🔍 Initialization result: {init_result}")
             else:
-                logger.warning("⚠️ STT processing thread already exists or not available")
+                logger.error(f"❌ Failed to initialize STT service for frontend streaming: {init_result.get('message')}")
+                return {
+                    "success": False,
+                    "message": f"STT initialization failed: {init_result.get('message')}",
+                    "mode": "frontend_streaming"
+                }
         else:
             logger.error("❌ STT agent or STT service not available for frontend streaming initialization")
+            return {
+                "success": False,
+                "message": "STT agent or service not available",
+                "mode": "frontend_streaming"
+            }
 
         return {
             "success": True,
@@ -473,19 +474,31 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 logger.error(f"❌ Both pydub and fallback audio processing failed: {fallback_error}")
                 raise Exception(f"Audio processing failed for {mime_type}. Ensure ffmpeg is properly installed and configured.")
 
-        # Get the STT agent and process the audio chunk
+        # Get the STT agent and process the audio chunk using proper interface
         stt_agent = conversation_system.get_agent("stt")
-        if stt_agent and hasattr(stt_agent, 'stt_service') and hasattr(stt_agent.stt_service, '_audio_queue'):
-            # Add the audio chunk to the STT service's processing queue
-            stt_agent.stt_service._audio_queue.put(audio_array)
-            logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
+        if stt_agent and hasattr(stt_agent, 'stt_service'):
+            # Use proper interface for queuing audio chunks
+            stt_service = stt_agent.stt_service
+            if hasattr(stt_service, 'queue_audio_chunk'):
+                success = stt_service.queue_audio_chunk(audio_array)
+                if success:
+                    logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
+                else:
+                    logger.warning("⚠️ Failed to queue audio chunk - service may not be recording")
+            else:
+                # Fallback to direct access if interface not available
+                if hasattr(stt_service, '_audio_queue'):
+                    stt_service._audio_queue.put(audio_array)
+                    logger.debug(f"📡 Audio chunk queued (fallback method): {len(audio_array)} samples")
+                else:
+                    logger.error("❌ No audio queue interface available")
         else:
             logger.warning("⚠️ STT agent or STT service not available for frontend audio processing")
             if stt_agent:
                 logger.debug(f"🔍 STT agent available: {stt_agent is not None}")
                 logger.debug(f"🔍 STT service available: {hasattr(stt_agent, 'stt_service')}")
                 if hasattr(stt_agent, 'stt_service'):
-                    logger.debug(f"🔍 Audio queue available: {hasattr(stt_agent.stt_service, '_audio_queue')}")
+                    logger.debug(f"🔍 Queue interface available: {hasattr(stt_agent.stt_service, 'queue_audio_chunk')}")
 
     except Exception as e:
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
@@ -537,7 +550,9 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                 # Backend microphone mode (fallback)
                 result = conversation_system.start_conversation()
 
-            # Enhanced response with debugging information
+            # Enhanced response with debugging information and cloud mode detection
+            from src.speech_agent import AUDIO_AVAILABLE, CLOUD_RUN_MODE
+
             response_data = {
                 "type": "recording_started",
                 "success": result.get("success"),
@@ -545,7 +560,14 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                 "browser": browser,
                 "mode": mode,
                 "streaming": streaming,
-                "timestamp": datetime.now().isoformat()
+                "timestamp": datetime.now().isoformat(),
+                # CRITICAL: Add cloud mode flags for frontend environment detection
+                "environment": {
+                    "cloud_run_mode": CLOUD_RUN_MODE,
+                    "audio_available": AUDIO_AVAILABLE,
+                    "mock_mode": result.get("mock_mode", False),
+                    "recommended_mode": "frontend_streaming" if CLOUD_RUN_MODE else "backend"
+                }
             }
 
             # Add debugging information for frontend streaming mode

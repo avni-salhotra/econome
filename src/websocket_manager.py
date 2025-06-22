@@ -100,12 +100,28 @@ class WebSocketManager:
 
         logger.info(f"🔗 New WebSocket connection: {connection_id}")
 
-        # Send welcome message
+        # Send welcome message with environment information
+        try:
+            from src.speech_agent import AUDIO_AVAILABLE, CLOUD_RUN_MODE
+            environment_info = {
+                "cloud_run_mode": CLOUD_RUN_MODE,
+                "audio_available": AUDIO_AVAILABLE,
+                "recommended_mode": "frontend_streaming" if CLOUD_RUN_MODE else "backend"
+            }
+        except ImportError:
+            # Fallback if speech_agent not available
+            environment_info = {
+                "cloud_run_mode": False,
+                "audio_available": True,
+                "recommended_mode": "backend"
+            }
+
         await connection.send_message({
             "type": "connection_established",
             "connection_id": connection_id,
             "timestamp": datetime.now().isoformat(),
-            "message": "WebSocket connection established"
+            "message": "WebSocket connection established",
+            "environment": environment_info
         })
 
         return connection_id

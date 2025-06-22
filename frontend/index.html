@@ -225,6 +225,14 @@
                 this.isRecording = false;
                 this.audioChunks = [];
 
+                // Environment detection properties
+                this.environment = {
+                    cloud_run_mode: false,
+                    audio_available: true,
+                    recommended_mode: 'backend'
+                };
+                this.environmentDetected = false;
+
                 this.initializeElements();
                 this.detectBrowser();
                 this.connectWebSocket();
@@ -256,6 +264,34 @@
                     document.getElementById('safariInstructions').classList.remove('hidden');
                     console.log('🧭 Safari detected - showing Safari-specific instructions');
                 }
+            }
+
+            updateUIForEnvironment() {
+                // Update UI based on detected environment
+                if (this.environment.cloud_run_mode) {
+                    console.log('☁️ Cloud environment detected - frontend streaming mode required');
+
+                    // Update status message to indicate cloud mode
+                    const statusEl = document.getElementById('statusText');
+                    if (statusEl) {
+                        statusEl.textContent = 'Cloud Mode - Ready for microphone access';
+                    }
+
+                    // Show cloud-specific instructions if needed
+                    const cloudInstructions = document.getElementById('cloudInstructions');
+                    if (cloudInstructions) {
+                        cloudInstructions.classList.remove('hidden');
+                    }
+                } else {
+                    console.log('🖥️ Local environment detected - backend mode available');
+                }
+
+                // Log environment details for debugging
+                console.log('🔍 Environment details:', {
+                    cloud_run_mode: this.environment.cloud_run_mode,
+                    audio_available: this.environment.audio_available,
+                    recommended_mode: this.environment.recommended_mode
+                });
             }
 
             detectSafariBrowser() {
@@ -374,6 +410,18 @@ Would you like to try Demo Mode instead?`;
 
             handleWebSocketMessage(data) {
                 switch(data.type) {
+                    case 'connection_established':
+                        this.connectionId = data.connection_id;
+                        // Process environment information from backend
+                        if (data.environment) {
+                            this.environment = data.environment;
+                            this.environmentDetected = true;
+                            console.log('🌍 Environment detected:', this.environment);
+                            this.updateUIForEnvironment();
+                        }
+                        this.updateStatus('ready', 'System ready - Click to start recording');
+                        break;
+
                     case 'system_ready':
                         this.connectionId = data.connection_id;
                         this.updateStatus('ready', 'System ready - Click to start recording');
@@ -381,12 +429,19 @@ Would you like to try Demo Mode instead?`;
 
                     case 'recording_started':
                         if (data.success) {
-                            // Check if we're in mock mode (Cloud Run environment)
-                            const isMockMode = data.mock_mode || data.cloud_run_mode;
-                            const statusText = isMockMode ? 'Mock Recording (Cloud Run)' : 'Recording - Speak clearly';
-                            const transcriptText = isMockMode ?
-                                '🌐 Cloud Run Mode: Simulating live transcription... (Real microphone recording not available in server environment)' :
-                                'Listening... speak clearly and naturally';
+                            console.log('✅ Recording started successfully');
+
+                            // Environment-aware status handling
+                            let statusText = 'Recording - Speak clearly';
+                            let transcriptText = 'Listening... speak clearly and naturally';
+
+                            if (data.environment && data.environment.cloud_run_mode) {
+                                statusText = 'Cloud recording active - Processing audio in real-time';
+                                transcriptText = '☁️ Cloud Mode: Processing your audio in real-time...';
+                            } else if (data.mock_mode) {
+                                statusText = 'Mock Recording (Demo Mode)';
+                                transcriptText = '🌐 Demo Mode: Simulating live transcription...';
+                            }
 
                             this.updateStatus('recording', statusText);
                             this.startBtn.disabled = true;
@@ -394,9 +449,22 @@ Would you like to try Demo Mode instead?`;
                             this.liveTranscript = '';
                             this.liveTranscriptEl.innerHTML = `<div class="text-gray-500 italic">${transcriptText}</div>`;
 
-                            // Show info about mock mode if applicable
-                            if (isMockMode) {
-                                console.log('🌐 Running in Cloud Run mock mode - simulating transcription');
+                            // Log debug information if available
+                            if (data.debug_info) {
+                                console.log('🔍 Recording debug info:', data.debug_info);
+                            }
+
+                            // Log environment information
+                            if (data.environment) {
+                                console.log('🌍 Environment info:', data.environment);
+                            }
+                        } else {
+                            console.error('❌ Failed to start recording:', data.message);
+                            this.updateStatus('error', 'Failed to start recording');
+
+                            // Show environment-specific error guidance
+                            if (data.environment && data.environment.cloud_run_mode) {
+                                console.log('💡 Cloud mode detected - try Demo Mode if microphone issues persist');
                             }
                         }
                         break;
@@ -451,7 +519,7 @@ Would you like to try Demo Mode instead?`;
             }
 
             async startRecording() {
-                // Safari-compatible recording with fallback to backend mode
+                // Environment-aware recording with proper cloud mode detection
                 try {
                     if (this.isRecording) {
                         console.log('⚠️ Already recording');
@@ -460,6 +528,7 @@ Would you like to try Demo Mode instead?`;
 
                     const isSafari = this.detectSafariBrowser();
                     console.log(`🔍 Browser detection: Safari=${isSafari}, UserAgent=${navigator.userAgent}`);
+                    console.log(`🌍 Environment: Cloud=${this.environment.cloud_run_mode}, Recommended=${this.environment.recommended_mode}`);
 
                     // Check WebSocket connection
                     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
@@ -468,11 +537,18 @@ Would you like to try Demo Mode instead?`;
 
                     this.updateStatus('processing', 'Requesting microphone access...');
 
-                    // Try Safari-compatible approach first
-                    if (isSafari) {
-                        await this.startSafariRecording();
+                    // Environment-aware recording mode selection
+                    if (this.environment.cloud_run_mode || this.environment.recommended_mode === 'frontend_streaming') {
+                        console.log('☁️ Using frontend streaming mode for cloud environment');
+                        await this.startFrontendStreamingRecording(isSafari);
                     } else {
-                        await this.startStandardRecording();
+                        console.log('🖥️ Using browser-specific recording for local environment');
+                        // Try Safari-compatible approach first
+                        if (isSafari) {
+                            await this.startSafariRecording();
+                        } else {
+                            await this.startStandardRecording();
+                        }
                     }
 
                 } catch (error) {
@@ -499,6 +575,37 @@ Would you like to try Demo Mode instead?`;
                         alert(`🎤 Recording error: ${error.message}\n\nTry refreshing the page and allowing microphone access.\n\n💡 Or try "Demo Mode" to see the full system working!`);
                     }
                 }
+            }
+
+            async startFrontendStreamingRecording(isSafari) {
+                console.log('☁️ Starting frontend streaming recording for cloud environment...');
+
+                // Cloud-optimized constraints
+                const constraints = {
+                    audio: {
+                        echoCancellation: true,
+                        noiseSuppression: true,
+                        autoGainControl: true,
+                        sampleRate: 16000,
+                        channelCount: 1
+                    }
+                };
+
+                // Get microphone stream
+                this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
+                console.log('✅ Cloud mode microphone stream obtained');
+
+                // Start real-time audio streaming optimized for cloud
+                await this.startAudioStreaming();
+
+                // Update UI to recording state
+                this.isRecording = true;
+                this.updateStatus('recording', 'Recording - Cloud mode active');
+                this.startBtn.disabled = true;
+                this.stopBtn.disabled = false;
+                this.liveTranscript = '';
+                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">☁️ Cloud Mode: Processing your audio in real-time...</div>';
+                this.resultsContainer.classList.add('hidden');
             }
 
             async startSafariRecording() {
@@ -579,13 +686,15 @@ Would you like to try Demo Mode instead?`;
                 console.log('🎵 Starting real-time audio streaming...');
 
                 // Notify backend that we're starting frontend audio streaming
+                const recordingMode = this.environment.cloud_run_mode ? 'frontend_streaming' : 'backend';
                 this.ws.send(JSON.stringify({
                     action: 'start_recording',
-                    browser: 'standard',
-                    mode: 'frontend_streaming',
+                    browser: this.isSafari ? 'safari' : 'standard',
+                    mode: recordingMode,
                     streaming: true,
                     sample_rate: 16000,
-                    channels: 1
+                    channels: 1,
+                    environment: this.environment
                 }));
 
                 // Set up MediaRecorder for real-time audio streaming
