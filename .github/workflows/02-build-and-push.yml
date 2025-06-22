@@ -118,14 +118,29 @@ jobs:
 
         echo "🏷️ Tag arguments: $TAGS_ARG"
 
-        # Build and push using Cloud Build
-        gcloud builds submit \
-          --dockerfile=devops/Dockerfile \
-          $TAGS_ARG \
-          --machine-type=e2-highcpu-8 \
-          --disk-size=100GB \
-          --timeout=1200s \
-          .
+        # Create temporary cloudbuild.yaml for custom Dockerfile location
+        cat > cloudbuild-temp.yaml << EOF
+        steps:
+        - name: 'gcr.io/cloud-builders/docker'
+          args: ['build', '-f', 'devops/Dockerfile', '-t', '\$_IMAGE_TAG', '.']
+        images:
+        - '\$_IMAGE_TAG'
+        EOF
+
+        # Build and push using Cloud Build with custom config
+        for tag in "${TAG_ARRAY[@]}"; do
+          echo "🏗️ Building and pushing: $tag"
+          gcloud builds submit \
+            --config=cloudbuild-temp.yaml \
+            --substitutions="_IMAGE_TAG=$tag" \
+            --machine-type=e2-highcpu-8 \
+            --disk-size=100GB \
+            --timeout=1200s \
+            .
+        done
+
+        # Clean up temporary config
+        rm cloudbuild-temp.yaml
 
         echo "✅ Cloud Build completed successfully"
 
