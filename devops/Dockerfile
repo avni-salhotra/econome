@@ -9,6 +9,7 @@ RUN apt-get update && apt-get install -y \
     portaudio19-dev \
     libasound2-dev \
     libsndfile1-dev \
+    ffmpeg \
     gcc \
     g++ \
     curl \
