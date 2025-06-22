@@ -65,9 +65,16 @@ jobs:
     - name: "🏷️ Set image tag"
       id: image-tag
       run: |
-        IMAGE_TAG="${{ inputs.image-tag || 'latest' }}"
+        # Use provided tag or fall back to build number format
+        if [ -n "${{ inputs.image-tag }}" ]; then
+          IMAGE_TAG="build-${{ inputs.image-tag }}"
+          echo "🏷️ Using provided build number: $IMAGE_TAG"
+        else
+          # Fall back to latest tag for manual deployments
+          IMAGE_TAG="latest"
+          echo "🏷️ Using latest tag for manual deployment: $IMAGE_TAG"
+        fi
         echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
-        echo "🏷️ Using image tag: $IMAGE_TAG"
 
     - name: "🔍 Validate secrets before deployment"
       run: |

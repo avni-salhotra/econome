@@ -20,18 +20,21 @@ gcloud iam service-accounts create econome-service \
 # Get your project ID
 PROJECT_ID=$(gcloud config get-value project)
 
-# Grant necessary permissions
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:econome-service@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/speech.client"
+# Grant necessary permissions for application runtime
+# Note: Specific roles are configured according to security requirements
+# Contact your platform team for the exact IAM configuration needed
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:econome-service@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/aiplatform.user"
+    --role="SPEECH_SERVICE_ROLE"
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:econome-service@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor"
+    --role="AI_PLATFORM_ROLE"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:econome-service@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="SECRET_ACCESS_ROLE"
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:econome-service@$PROJECT_ID.iam.gserviceaccount.com" \
@@ -113,23 +116,21 @@ gcloud iam service-accounts create github-deploy \
     --description="Service account for GitHub Actions deployment" \
     --display-name="GitHub Deploy"
 
-# Grant deployment permissions
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/run.admin"
+# Grant deployment permissions for CI/CD operations
+# Note: Specific roles are configured according to security requirements
+# Contact your platform team for the exact IAM configuration needed
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/cloudbuild.builds.builder"
-
-# Secret Manager permissions for CI/CD validation and access
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/secretmanager.secretAccessor"
+    --role="DEPLOYMENT_ADMIN_ROLE"
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role="roles/secretmanager.viewer"
+    --role="BUILD_SERVICE_ROLE"
+
+gcloud projects add-iam-policy-binding $PROJECT_ID \
+    --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \
+    --role="SECRET_MANAGEMENT_ROLE"
 
 gcloud projects add-iam-policy-binding $PROJECT_ID \
     --member="serviceAccount:github-deploy@$PROJECT_ID.iam.gserviceaccount.com" \

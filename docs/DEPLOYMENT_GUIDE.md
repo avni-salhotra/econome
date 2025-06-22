@@ -34,13 +34,15 @@ Before starting, you'll need:
 5. Click "Create and Continue"
 
 ### 2.2 Grant Permissions
-Add these roles to your service account:
-- `Cloud Run Admin`
-- `Cloud Build Service Account`
-- `Speech-to-Text Admin`
-- `AI Platform Admin`
-- `Secret Manager Admin`
-- `Storage Admin`
+Configure appropriate IAM roles for your service account based on your organization's security policy. Required capabilities include:
+- Container deployment and management
+- Build and CI/CD operations
+- Speech processing services
+- AI/ML platform access
+- Secret management operations
+- Storage access for artifacts
+
+Contact your platform team for specific role assignments.
 
 ### 2.3 Create and Download Credentials
 1. Click on your service account

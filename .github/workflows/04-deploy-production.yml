@@ -170,12 +170,12 @@ jobs:
         echo "🚀 Deploying to production environment..."
         echo "📋 Deployment configuration:"
         echo "  - Service: ${{ env.SERVICE_NAME }}"
-        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}"
+        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:build-${{ inputs.image-tag }}"
         echo "  - Region: ${{ env.REGION }}"
         echo "  - Environment: ${{ env.ENVIRONMENT }}"
         
         gcloud run deploy ${{ env.SERVICE_NAME }} \
-          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}" \
+          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:build-${{ inputs.image-tag }}" \
           --platform=managed \
           --region=${{ env.REGION }} \
           --allow-unauthenticated \

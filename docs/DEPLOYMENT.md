@@ -33,23 +33,22 @@ This guide provides comprehensive instructions for deploying Econome using the e
      --description="Service account for Econome CI/CD" \
      --display-name="Econome Builder"
    
-   # Grant necessary permissions
+   # Grant necessary permissions for deployment operations
+   # Note: Specific roles are configured according to security requirements
+   # Contact your platform team for the exact IAM configuration needed
+
+   # Example permission setup (adjust roles based on your security policy):
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:econome-builder@PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/run.admin"
+     --role="DEPLOYMENT_ROLE"
 
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:econome-builder@PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/cloudbuild.builds.builder"
-
-   # Secret Manager permissions for CI/CD validation and access
-   gcloud projects add-iam-policy-binding PROJECT_ID \
-     --member="serviceAccount:econome-builder@PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/secretmanager.secretAccessor"
+     --role="BUILD_ROLE"
 
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:econome-builder@PROJECT_ID.iam.gserviceaccount.com" \
-     --role="roles/secretmanager.viewer"
+     --role="SECRET_ACCESS_ROLE"
    
    gcloud projects add-iam-policy-binding PROJECT_ID \
      --member="serviceAccount:econome-builder@PROJECT_ID.iam.gserviceaccount.com" \
