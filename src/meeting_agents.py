@@ -429,16 +429,25 @@ class ActionItemAgent(Agent):
     def _initialize_bigquery(self):
         """Initialize BigQuery client"""
         try:
-            credentials_path = "speech-credentials.json"
-            if os.path.exists(credentials_path):
-                self.bigquery_client = bigquery.Client(
-                    credentials=service_account.Credentials.from_service_account_file(
-                        credentials_path
+            # Try multiple credential paths (for Cloud Run and local development)
+            credential_paths = [
+                "speech-credentials.json",  # Default path (local development)
+                "/app/secrets/speech-credentials.json",  # New Cloud Run path
+                "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
+            ]
+
+            credentials_found = False
+            for path in credential_paths:
+                if os.path.exists(path):
+                    self.bigquery_client = bigquery.Client(
+                        credentials=service_account.Credentials.from_service_account_file(path)
                     )
-                )
-                self._has_bigquery = True
-                print("✅ BigQuery client initialized")
-            else:
+                    self._has_bigquery = True
+                    credentials_found = True
+                    print(f"✅ BigQuery client initialized with credentials from {path}")
+                    break
+
+            if not credentials_found:
                 print("⚠️ No BigQuery credentials - using mock storage")
                 self._has_bigquery = False
         except Exception as e:

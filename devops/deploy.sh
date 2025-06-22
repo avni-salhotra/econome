@@ -204,7 +204,8 @@ deploy_service() {
             --timeout=3600 \
             --max-instances=10 \
             --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=8080" \
-            --set-secrets="/secrets/speech-credentials.json=speech-credentials:latest,/secrets/gemini-credentials.json=gemini-credentials:latest"
+            --set-secrets="/app/secrets/speech-credentials.json=speech-credentials:latest" \
+            --set-secrets="/app/secrets/gemini-credentials.json=gemini-credentials:latest"
     else
         print_status "Building and deploying Econome to Cloud Run..."
 
