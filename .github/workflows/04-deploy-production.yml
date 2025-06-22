@@ -61,14 +61,41 @@ jobs:
     - name: "🔍 Verify image exists"
       run: |
         echo "🔍 Verifying image exists in registry..."
-        IMAGE_TAG="${{ inputs.image-tag }}"
-        
+        INPUT_TAG="${{ inputs.image-tag }}"
+
+        # Handle different tag formats
+        if [[ "$INPUT_TAG" == "latest" ]]; then
+          # For 'latest', use the actual latest tag
+          IMAGE_TAG="latest"
+          echo "🏷️ Using latest tag: $IMAGE_TAG"
+        elif [[ "$INPUT_TAG" =~ ^[0-9]+$ ]]; then
+          # For numeric input, add build- prefix
+          IMAGE_TAG="build-$INPUT_TAG"
+          echo "🏷️ Using build tag: $IMAGE_TAG (from input: $INPUT_TAG)"
+        elif [[ "$INPUT_TAG" =~ ^build- ]]; then
+          # If already has build- prefix, use as-is
+          IMAGE_TAG="$INPUT_TAG"
+          echo "🏷️ Using provided tag: $IMAGE_TAG"
+        else
+          # For other formats, try as-is first
+          IMAGE_TAG="$INPUT_TAG"
+          echo "🏷️ Using custom tag: $IMAGE_TAG"
+        fi
+
+        echo "🔍 Checking if image exists: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG"
         if gcloud container images describe "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG" > /dev/null 2>&1; then
           echo "✅ Image found: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG"
         else
           echo "❌ Image not found: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG"
-          echo "Available tags:"
-          gcloud container images list-tags "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome" --limit=10
+          echo ""
+          echo "🔍 Available tags (showing last 10):"
+          gcloud container images list-tags "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome" \
+            --limit=10 --sort-by=~TIMESTAMP --format="table(tags,timestamp)"
+          echo ""
+          echo "💡 Tag format help:"
+          echo "  - For build number: use just the number (e.g., '15' becomes 'build-15')"
+          echo "  - For latest: use 'latest'"
+          echo "  - For custom: use full tag name (e.g., 'build-15', 'sha-abc123')"
           exit 1
         fi
 
@@ -121,9 +148,10 @@ jobs:
     environment: production
     
     outputs:
-      service-url: ${{ steps.get-url.outputs.url }}
+      service-url: ${{ steps.deploy.outputs.url }}
       previous-revision: ${{ steps.get-current.outputs.revision }}
       deployment-time: ${{ steps.deploy-time.outputs.time }}
+      image-tag: ${{ steps.image-tag.outputs.final-tag }}
     
     steps:
     - name: "📥 Checkout code"
@@ -157,6 +185,25 @@ jobs:
         echo "time=$DEPLOY_TIME" >> $GITHUB_OUTPUT
         echo "⏰ Deployment time: $DEPLOY_TIME"
 
+    - name: "🏷️ Set final image tag"
+      id: image-tag
+      run: |
+        INPUT_TAG="${{ inputs.image-tag }}"
+
+        # Handle different tag formats (same logic as verification step)
+        if [[ "$INPUT_TAG" == "latest" ]]; then
+          IMAGE_TAG="latest"
+        elif [[ "$INPUT_TAG" =~ ^[0-9]+$ ]]; then
+          IMAGE_TAG="build-$INPUT_TAG"
+        elif [[ "$INPUT_TAG" =~ ^build- ]]; then
+          IMAGE_TAG="$INPUT_TAG"
+        else
+          IMAGE_TAG="$INPUT_TAG"
+        fi
+
+        echo "final-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "✅ Final image tag: $IMAGE_TAG"
+
     - name: "🔍 Validate secrets before deployment"
       run: |
         echo "🔍 Validating secrets exist in Secret Manager..."
@@ -170,12 +217,14 @@ jobs:
         echo "🚀 Deploying to production environment..."
         echo "📋 Deployment configuration:"
         echo "  - Service: ${{ env.SERVICE_NAME }}"
-        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:build-${{ inputs.image-tag }}"
+        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.final-tag }}"
         echo "  - Region: ${{ env.REGION }}"
         echo "  - Environment: ${{ env.ENVIRONMENT }}"
-        
-        gcloud run deploy ${{ env.SERVICE_NAME }} \
-          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:build-${{ inputs.image-tag }}" \
+        echo "  - Input Tag: ${{ inputs.image-tag }}"
+        echo "  - Final Tag: ${{ steps.image-tag.outputs.final-tag }}"
+
+        SERVICE_URL=$(gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.final-tag }}" \
           --platform=managed \
           --region=${{ env.REGION }} \
           --allow-unauthenticated \
@@ -189,24 +238,20 @@ jobs:
           --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
           --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
           --tag="prod-${{ github.run_id }}" \
-          --format="value(status.url)"
-
-    - name: "🔍 Get production service URL"
-      id: get-url
-      run: |
-        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
-          --region=${{ env.REGION }} \
           --format="value(status.url)")
+
         echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+        echo "✅ Deployment completed successfully"
         echo "🌐 Production URL: $SERVICE_URL"
 
     - name: "⏱️ Wait for deployment to stabilize"
       run: |
         echo "⏱️ Waiting for deployment to stabilize..."
         sleep 60
-        
-        SERVICE_URL="${{ steps.get-url.outputs.url }}"
-        
+
+        SERVICE_URL="${{ steps.deploy.outputs.url }}"
+        echo "🌐 Testing production service at: $SERVICE_URL"
+
         # Health check with retries
         for i in {1..15}; do
           if curl -f -s "$SERVICE_URL/health" > /dev/null; then
@@ -216,7 +261,7 @@ jobs:
             echo "⏳ Attempt $i/15: Service not ready yet, waiting..."
             sleep 20
           fi
-          
+
           if [ $i -eq 15 ]; then
             echo "❌ Production service failed to respond after 5 minutes"
             exit 1
@@ -231,14 +276,15 @@ jobs:
         echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
         echo "- **Service**: ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Region**: ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
-        echo "- **Image Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Input Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Final Image Tag**: ${{ steps.image-tag.outputs.final-tag }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Deployment Time**: ${{ steps.deploy-time.outputs.time }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Previous Revision**: ${{ steps.get-current.outputs.revision }}" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🌐 Service URLs" >> $GITHUB_STEP_SUMMARY
-        echo "- **Production App**: [${{ steps.get-url.outputs.url }}](${{ steps.get-url.outputs.url }})" >> $GITHUB_STEP_SUMMARY
-        echo "- **Health Check**: [${{ steps.get-url.outputs.url }}/health](${{ steps.get-url.outputs.url }}/health)" >> $GITHUB_STEP_SUMMARY
-        echo "- **API Docs**: [${{ steps.get-url.outputs.url }}/docs](${{ steps.get-url.outputs.url }}/docs)" >> $GITHUB_STEP_SUMMARY
+        echo "- **Production App**: [${{ steps.deploy.outputs.url }}](${{ steps.deploy.outputs.url }})" >> $GITHUB_STEP_SUMMARY
+        echo "- **Health Check**: [${{ steps.deploy.outputs.url }}/health](${{ steps.deploy.outputs.url }}/health)" >> $GITHUB_STEP_SUMMARY
+        echo "- **API Docs**: [${{ steps.deploy.outputs.url }}/docs](${{ steps.deploy.outputs.url }}/docs)" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🔧 Configuration" >> $GITHUB_STEP_SUMMARY
         echo "- **Memory**: 2Gi" >> $GITHUB_STEP_SUMMARY
