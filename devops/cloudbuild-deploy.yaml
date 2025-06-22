@@ -41,13 +41,14 @@ steps:
 substitutions:
   _ENVIRONMENT: 'production'  # Default to production
   _IMAGE_TAG: 'latest'        # Default to latest image
-  _SERVICE_NAME: 'econome'    # Service name (can be environment-specific)
+  _SERVICE_NAME: 'econome'    # Service name (will be econome-staging for staging)
   _REGION: 'us-central1'      # Default region
 
 # Build options for performance and logging
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
+  serviceAccount: econome-builder@econome-hackathon.iam.gserviceaccount.com
 
 # Overall timeout for the deployment process
 timeout: '600s'
