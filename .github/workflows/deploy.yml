@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: econome-hackathon
       SERVICE_NAME: econome
       REGION: us-central1
     
@@ -69,7 +69,7 @@ jobs:
     timeout-minutes: 15
     if: github.event_name == 'pull_request'
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: econome-hackathon
       SERVICE_NAME: econome
       REGION: us-central1
 
@@ -87,15 +87,15 @@ jobs:
         file: devops/Dockerfile
         push: false
         tags: |
-          gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-${{ github.event.number }}
-          gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-validation
+          gcr.io/econome-hackathon/econome:pr-${{ github.event.number }}
+          gcr.io/econome-hackathon/econome:pr-validation
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
     - name: Build validation summary
       run: |
         echo "✅ Docker build validation passed"
-        echo "🔍 Image would be tagged as: gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-${{ github.event.number }}"
+        echo "🔍 Image would be tagged as: gcr.io/econome-hackathon/econome:pr-${{ github.event.number }}"
         echo "📦 Build completed successfully - ready for merge"
 
   # CI-only job: Build and push image to registry (NO DEPLOYMENT)
@@ -105,7 +105,7 @@ jobs:
     timeout-minutes: 15
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     env:
-      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      PROJECT_ID: econome-hackathon
       SERVICE_NAME: econome
       REGION: us-central1
 
@@ -117,7 +117,7 @@ jobs:
       uses: google-github-actions/auth@v2
       with:
         credentials_json: ${{ secrets.GCP_CREDENTIALS }}
-        project_id: ${{ secrets.GCP_PROJECT_ID }}
+        project_id: econome-hackathon
 
     - name: Set up Google Cloud CLI
       uses: google-github-actions/setup-gcloud@v2
