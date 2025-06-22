@@ -20,7 +20,16 @@ import os
 # Google Cloud Speech V2 imports
 from google.cloud import speech_v2
 from google.oauth2 import service_account
-import sounddevice as sd
+
+# Optional audio imports for CI compatibility
+try:
+    import sounddevice as sd
+    AUDIO_AVAILABLE = True
+except (ImportError, OSError) as e:
+    print(f"⚠️ Audio library not available: {e}")
+    print("🔧 Running in audio-disabled mode (suitable for CI/testing)")
+    sd = None
+    AUDIO_AVAILABLE = False
 
 @dataclass
 class TranscriptSegment:
@@ -194,7 +203,29 @@ class ProductionSTTServiceV2:
                     self._error_callback("audio_processing", e)
 
         print("🏁 Audio processing thread finished")
-    
+
+    def _mock_audio_processing(self) -> None:
+        """Mock audio processing for CI environments without audio hardware"""
+        print("🔄 Mock audio processing thread started")
+        while self._is_recording:
+            try:
+                # Simulate audio chunk processing every 2 seconds
+                time.sleep(2.0)
+
+                if not self._is_recording:
+                    break
+
+                # Generate mock transcript
+                self._chunk_counter += 1
+                self._generate_mock_transcript()
+
+            except Exception as e:
+                print(f"❌ Mock audio processing error: {e}")
+                if self._error_callback:
+                    self._error_callback("mock_audio_processing", e)
+
+        print("🏁 Mock audio processing thread finished")
+
     def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
         """Transcribe audio chunk using Google Speech V2 with Chirp 2 model"""
         try:
@@ -336,6 +367,31 @@ class ProductionSTTServiceV2:
                 "is_recording": True
             }
 
+        # Check if audio is available
+        if not AUDIO_AVAILABLE:
+            print("🎤 Starting mock recording (audio not available)...")
+            self._is_recording = True
+            self._session_start_time = time.time()
+            self._chunk_counter = 0
+            self._segments.clear()
+
+            # Start mock processing thread
+            self._processing_thread = threading.Thread(
+                target=self._mock_audio_processing,
+                daemon=True
+            )
+            self._processing_thread.start()
+
+            return {
+                "success": True,
+                "message": "Mock recording started (audio not available)",
+                "is_recording": True,
+                "sample_rate": self.sample_rate,
+                "chunk_duration": self.chunk_duration,
+                "has_credentials": self._has_credentials,
+                "mock_mode": True
+            }
+
         try:
             print("🎤 Starting live audio recording...")
             self._clear_audio_buffers()
@@ -402,14 +458,16 @@ class ProductionSTTServiceV2:
         try:
             print("⏹️ Stopping recording...")
 
-            # STEP 1: Stop audio stream FIRST to prevent new audio chunks
-            if hasattr(self, '_audio_stream'):
+            # STEP 1: Stop audio stream FIRST to prevent new audio chunks (if audio is available)
+            if AUDIO_AVAILABLE and hasattr(self, '_audio_stream'):
                 try:
                     self._audio_stream.stop()
                     self._audio_stream.close()
                     print("🔇 Audio stream stopped")
                 except Exception as e:
                     print(f"⚠️ Error stopping audio stream: {e}")
+            elif not AUDIO_AVAILABLE:
+                print("🔇 Mock audio processing stopped")
 
             # STEP 2: Set recording flag to False to stop processing thread
             self._is_recording = False

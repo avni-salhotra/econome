@@ -42,7 +42,13 @@ jobs:
     - name: "🔧 Install system dependencies"
       run: |
         sudo apt-get update
-        sudo apt-get install -y portaudio19-dev python3-pyaudio
+        sudo apt-get install -y \
+          portaudio19-dev \
+          python3-pyaudio \
+          libasound2-dev \
+          libsndfile1-dev \
+          pulseaudio \
+          alsa-utils
 
     - name: "📦 Install Python dependencies"
       run: |
@@ -218,10 +224,22 @@ jobs:
     - name: "🧪 Run integration tests"
       run: |
         echo "🧪 Running integration tests in mock mode..."
+
+        # Set up virtual audio environment for CI
+        export PULSE_RUNTIME_PATH=/tmp/pulse
+        mkdir -p $PULSE_RUNTIME_PATH
+
+        # Start a virtual audio server (headless)
+        pulseaudio --start --exit-idle-time=-1 --daemon --verbose || echo "PulseAudio already running"
+
+        # Run integration tests with proper environment
         cd src && python main.py --test
       env:
         MOCK_MODE: true
         GOOGLE_CLOUD_PROJECT: econome-hackathon
+        # Audio environment variables for CI
+        SDL_AUDIODRIVER: pulse
+        PULSE_RUNTIME_PATH: /tmp/pulse
 
     - name: "🌐 Test web API endpoints"
       run: |
