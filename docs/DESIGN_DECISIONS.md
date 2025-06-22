@@ -232,9 +232,36 @@ This document captures the key architectural and design decisions made for the E
 
 ---
 
+### 11. **Container Build Strategy**
+
+#### **Decision: Google Cloud Build**
+**Chosen**: `gcloud builds submit` instead of `docker/build-push-action`
+
+**Rationale**:
+- **Reliability**: Eliminates untagged image issues common with docker/build-push-action
+- **Native Integration**: Seamless authentication and registry access with GCR
+- **Consistent Tagging**: Reliable tag application without race conditions
+- **Performance**: Optimized for Google Container Registry
+- **Security**: No Docker daemon required in CI/CD environment
+
+**Alternatives Considered**:
+- **docker/build-push-action**: Popular but has tagging reliability issues with GCR
+- **Manual Docker Commands**: More control but verbose and error-prone
+- **Kaniko**: Good for Kubernetes but unnecessary complexity
+- **Buildpacks**: Simpler but less control over build process
+
+**Tradeoffs**:
+- ✅ **Pros**: Reliable tagging, native GCP integration, better error handling
+- ❌ **Cons**: GCP vendor lock-in, requires Cloud Build API enabled
+
+**Migration Context**:
+This decision was made after experiencing consistent issues with `docker/build-push-action` creating untagged images in GCR, causing deployment failures. Research showed this is a common issue with the action when used with Google Container Registry.
+
+---
+
 ## 🔒 Security Decisions
 
-### 11. **Secret Management**
+### 12. **Secret Management**
 
 #### **Decision: Google Secret Manager**
 **Chosen**: Centralized secret management with Secret Manager
@@ -256,7 +283,7 @@ This document captures the key architectural and design decisions made for the E
 
 ---
 
-### 12. **Data Privacy Strategy**
+### 13. **Data Privacy Strategy**
 
 #### **Decision: Ephemeral Storage with TTL**
 **Chosen**: 24-hour TTL with automatic deletion
@@ -280,7 +307,7 @@ This document captures the key architectural and design decisions made for the E
 
 ## 📊 Performance Decisions
 
-### 13. **Scaling Strategy**
+### 14. **Scaling Strategy**
 
 #### **Decision: Horizontal Auto-scaling**
 **Chosen**: Cloud Run auto-scaling with instance limits
