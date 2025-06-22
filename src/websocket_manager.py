@@ -7,6 +7,7 @@ Handles live transcription streaming and system status updates
 import asyncio
 import json
 import time
+import uuid
 from typing import List, Dict, Any, Optional, Callable
 from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect
@@ -27,6 +28,16 @@ class WebSocketConnection:
         self.is_active = True
         self.conversation_session_id: Optional[str] = None
         self.user_metadata: Dict[str, Any] = {}
+
+        # OBSERVABILITY: Per-connection stream tracking
+        self.connection_stream_id = str(uuid.uuid4())
+        self.chunk_sequence_counter = 0
+        self.total_chunks_processed = 0
+        self.total_chunks_dropped = 0
+        self.last_chunk_timestamp: Optional[datetime] = None
+
+        # Chunk tracking for alerting
+        self.chunk_history: List[Dict[str, Any]] = []  # Rolling window for unprocessed chunk detection
     
     async def send_message(self, message: Dict[str, Any]) -> bool:
         """Send message to this connection"""
@@ -48,15 +59,57 @@ class WebSocketConnection:
             "timestamp": datetime.now().isoformat()
         })
     
+    def get_next_chunk_sequence(self) -> int:
+        """Get next chunk sequence number for this connection"""
+        self.chunk_sequence_counter += 1
+        self.last_chunk_timestamp = datetime.now()
+        return self.chunk_sequence_counter
+
+    def record_chunk_processed(self, success: bool = True):
+        """Record chunk processing result for observability"""
+        if success:
+            self.total_chunks_processed += 1
+        else:
+            self.total_chunks_dropped += 1
+
+        # Add to rolling window for unprocessed chunk alerting
+        chunk_record = {
+            "timestamp": datetime.now(),
+            "success": success,
+            "sequence": self.chunk_sequence_counter
+        }
+        self.chunk_history.append(chunk_record)
+
+        # Keep only last 60 seconds of history
+        cutoff_time = datetime.now().timestamp() - 60
+        self.chunk_history = [
+            record for record in self.chunk_history
+            if record["timestamp"].timestamp() > cutoff_time
+        ]
+
+    def get_unprocessed_chunk_count(self, window_seconds: int = 60) -> int:
+        """Get count of unprocessed chunks in rolling window"""
+        cutoff_time = datetime.now().timestamp() - window_seconds
+        return sum(
+            1 for record in self.chunk_history
+            if record["timestamp"].timestamp() > cutoff_time and not record["success"]
+        )
+
     def get_connection_info(self) -> Dict[str, Any]:
-        """Get connection information"""
+        """Get connection information with observability metrics"""
         return {
             "connection_id": self.connection_id,
+            "connection_stream_id": self.connection_stream_id,
             "connected_at": self.connected_at.isoformat(),
             "last_activity": self.last_activity.isoformat(),
+            "last_chunk_timestamp": self.last_chunk_timestamp.isoformat() if self.last_chunk_timestamp else None,
             "is_active": self.is_active,
             "conversation_session_id": self.conversation_session_id,
-            "duration_seconds": (datetime.now() - self.connected_at).total_seconds()
+            "duration_seconds": (datetime.now() - self.connected_at).total_seconds(),
+            "chunk_sequence_counter": self.chunk_sequence_counter,
+            "total_chunks_processed": self.total_chunks_processed,
+            "total_chunks_dropped": self.total_chunks_dropped,
+            "unprocessed_chunks_60s": self.get_unprocessed_chunk_count(60)
         }
 
 class WebSocketManager:

@@ -139,9 +139,16 @@ class ProductionSTTServiceV2:
         self._chunk_counter = 0
         self._segments = []
         self._last_queue_cleanup = time.time()
+        self.queue_cleanup_interval = 30.0  # seconds
+        self.queue_warning_threshold = int(self.max_queue_size * 0.8)  # 80% full warning
 
         self._recording_thread = None
         self._processing_thread = None
+
+        # OBSERVABILITY: Thread health monitoring
+        self._last_heartbeat = time.time()
+        self.heartbeat_interval = 30.0  # seconds
+        self._thread_health_alerts = []
 
         self._transcript_callback = None
         self._error_callback = None
@@ -229,18 +236,44 @@ class ProductionSTTServiceV2:
     
     def _process_audio_chunks(self) -> None:
         """Process audio chunks with Google Speech V2"""
+        from datetime import datetime
         print("🔄 Audio processing thread started")
         chunk_count = 0
 
         while self._is_recording:
             try:
                 # Get audio chunk with timeout
-                audio_chunk = self._audio_queue.get(timeout=1.0)
+                chunk_data = self._audio_queue.get(timeout=1.0)
 
                 # Double-check recording status before processing
                 if not self._is_recording:
                     print("🛑 Recording stopped, skipping chunk processing")
                     break
+
+                # OBSERVABILITY: Handle timestamped chunks and calculate queue time
+                if isinstance(chunk_data, dict) and "audio_data" in chunk_data:
+                    # New timestamped chunk format
+                    audio_chunk = chunk_data["audio_data"]
+                    enqueue_timestamp = chunk_data.get("enqueue_timestamp", 0)
+                    chunk_id = chunk_data.get("chunk_id", chunk_count)
+
+                    # Calculate queue time
+                    dequeue_timestamp = datetime.now().timestamp() * 1000  # milliseconds
+                    queue_time_ms = dequeue_timestamp - enqueue_timestamp if enqueue_timestamp > 0 else 0
+
+                    # STRUCTURED LOGGING: Queue time tracking
+                    queue_timing_context = {
+                        "chunk_id": chunk_id,
+                        "enqueue_timestamp": enqueue_timestamp,
+                        "dequeue_timestamp": dequeue_timestamp,
+                        "queue_time_ms": round(queue_time_ms, 2),
+                        "pipeline_stage": "stt_dequeue"
+                    }
+                    print(f"📊 AUDIO_PIPELINE_QUEUE_TIME: {queue_timing_context}")
+                else:
+                    # Legacy chunk format (raw numpy array)
+                    audio_chunk = chunk_data
+                    queue_time_ms = 0
 
                 # Process the chunk
                 self._transcribe_chunk(audio_chunk)
@@ -250,10 +283,14 @@ class ProductionSTTServiceV2:
                 if chunk_count % 10 == 0:
                     self._manage_queue_health()
 
+                # OBSERVABILITY: Thread health heartbeat
+                self._log_thread_heartbeat()
+
             except queue.Empty:
                 # Timeout is normal, just continue checking
-                # Use this opportunity to check queue health
+                # Use this opportunity to check queue health and heartbeat
                 self._manage_queue_health()
+                self._log_thread_heartbeat()
                 continue
             except Exception as e:
                 print(f"❌ Audio processing error: {e}")
@@ -656,15 +693,29 @@ class ProductionSTTServiceV2:
                 print("⚠️ Processing thread not running - cannot queue audio chunk")
                 return False
 
+            # OBSERVABILITY: Add timestamp to audio chunk for queue time tracking
+            from datetime import datetime
+            timestamped_chunk = {
+                "audio_data": audio_array,
+                "enqueue_timestamp": datetime.now().timestamp() * 1000,  # milliseconds
+                "chunk_id": self._chunk_counter
+            }
+
             if not self._audio_queue.full():
-                self._audio_queue.put(audio_array, block=False)
+                self._audio_queue.put(timestamped_chunk, block=False)
                 return True
             else:
                 # Queue is full, remove oldest and add new (with timeout for safety)
                 try:
-                    self._audio_queue.get_nowait()
-                    self._audio_queue.put(audio_array, block=False)
-                    print("⚠️ Audio queue was full - dropped oldest chunk")
+                    dropped_chunk = self._audio_queue.get_nowait()
+                    self._audio_queue.put(timestamped_chunk, block=False)
+
+                    # Log dropped chunk with timing info
+                    if isinstance(dropped_chunk, dict) and "enqueue_timestamp" in dropped_chunk:
+                        queue_time_ms = timestamped_chunk["enqueue_timestamp"] - dropped_chunk["enqueue_timestamp"]
+                        print(f"⚠️ Audio queue was full - dropped oldest chunk (queue_time_ms: {queue_time_ms:.2f})")
+                    else:
+                        print("⚠️ Audio queue was full - dropped oldest chunk")
                     return True
                 except queue.Empty:
                     print("❌ Audio queue management failed")
@@ -715,6 +766,48 @@ class ProductionSTTServiceV2:
 
         except Exception as e:
             print(f"❌ Error in queue health management: {e}")
+
+    def _log_thread_heartbeat(self) -> None:
+        """
+        OBSERVABILITY: Log periodic heartbeat to confirm STT processing thread is alive
+        """
+        try:
+            current_time = time.time()
+
+            # Check if it's time for a heartbeat
+            if current_time - self._last_heartbeat >= self.heartbeat_interval:
+                self._last_heartbeat = current_time
+
+                # STRUCTURED LOGGING: Thread health heartbeat
+                heartbeat_context = {
+                    "pipeline_stage": "stt_thread_heartbeat",
+                    "thread_id": threading.current_thread().ident,
+                    "thread_name": threading.current_thread().name,
+                    "is_recording": self._is_recording,
+                    "queue_size": self._audio_queue.qsize(),
+                    "chunks_processed": self._chunk_counter,
+                    "session_duration": current_time - self._session_start_time if self._session_start_time else 0,
+                    "heartbeat_timestamp": current_time * 1000,  # milliseconds
+                    "heartbeat_interval_seconds": self.heartbeat_interval
+                }
+                print(f"💓 STT_THREAD_HEARTBEAT: {heartbeat_context}")
+
+                # Check for thread health issues
+                if not self._is_recording:
+                    alert_context = {
+                        **heartbeat_context,
+                        "pipeline_stage": "stt_thread_idle_alert",
+                        "alert_reason": "thread_not_recording"
+                    }
+                    print(f"⚠️ STT_THREAD_IDLE_ALERT: {alert_context}")
+                    self._thread_health_alerts.append(alert_context)
+
+                # Limit alert history
+                if len(self._thread_health_alerts) > 10:
+                    self._thread_health_alerts = self._thread_health_alerts[-5:]
+
+        except Exception as e:
+            print(f"❌ Error in thread heartbeat logging: {e}")
 
     def get_queue_stats(self) -> Dict[str, Any]:
         """Get detailed queue statistics for monitoring"""
@@ -850,6 +943,54 @@ class ProductionSTTServiceV2:
             "speakers": list(speaker_segments.keys()),
             "total_speakers": len(speaker_segments)
         }
+
+    def get_internal_state(self) -> Dict[str, Any]:
+        """
+        OBSERVABILITY: Get comprehensive internal state for debugging and monitoring
+        """
+        try:
+            current_time = time.time()
+
+            # Get last chunk timestamp
+            last_chunk_timestamp = None
+            if self._segments:
+                last_chunk_timestamp = self._segments[-1].timestamp.isoformat()
+
+            # Processing thread status
+            thread_status = "not_started"
+            if self._processing_thread:
+                if self._processing_thread.is_alive():
+                    thread_status = "alive"
+                else:
+                    thread_status = "dead"
+
+            return {
+                "service_type": "ProductionSTTServiceV2",
+                "session_id": getattr(self, 'session_id', None),
+                "is_recording": self._is_recording,
+                "session_start_time": self._session_start_time,
+                "session_duration": current_time - self._session_start_time if self._session_start_time else 0,
+                "queue_size": self._audio_queue.qsize(),
+                "max_queue_size": self.max_queue_size,
+                "queue_health": self.get_queue_stats().get("queue_health", "unknown"),
+                "chunks_processed": self._chunk_counter,
+                "segments_captured": len(self._segments),
+                "speakers_detected": len(self._get_unique_speakers()),
+                "last_chunk_timestamp": last_chunk_timestamp,
+                "processing_thread_status": thread_status,
+                "processing_thread_id": self._processing_thread.ident if self._processing_thread else None,
+                "has_credentials": self._has_credentials,
+                "last_heartbeat": self._last_heartbeat,
+                "thread_health_alerts_count": len(self._thread_health_alerts),
+                "last_queue_cleanup": self._last_queue_cleanup,
+                "state_dump_timestamp": current_time * 1000  # milliseconds
+            }
+        except Exception as e:
+            return {
+                "error": f"Failed to get internal state: {e}",
+                "service_type": "ProductionSTTServiceV2",
+                "state_dump_timestamp": time.time() * 1000
+            }
     
     def save_transcript(self, filename: Optional[str] = None) -> Dict[str, Any]:
         """Save transcript to file"""

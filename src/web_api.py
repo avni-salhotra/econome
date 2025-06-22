@@ -415,9 +415,21 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         # Decode base64 audio data
         audio_bytes = base64.b64decode(audio_data)
 
-        # STRUCTURED LOGGING: Audio pipeline entry point
+        # OBSERVABILITY: Get connection stream tracking info
+        connection = websocket_manager.connections.get(connection_id)
+        if connection:
+            connection_stream_id = connection.connection_stream_id
+            chunk_seq_number = connection.get_next_chunk_sequence()
+        else:
+            connection_stream_id = "unknown"
+            chunk_seq_number = 0
+            logger.warning(f"⚠️ Connection {connection_id} not found in websocket_manager")
+
+        # STRUCTURED LOGGING: Audio pipeline entry point with observability
         pipeline_context = {
             "connection_id": connection_id,
+            "connection_stream_id": connection_stream_id,
+            "chunk_seq_number": chunk_seq_number,
             "mime_type": mime_type,
             "audio_bytes_length": len(audio_bytes),
             "base64_length": len(audio_data),
@@ -445,16 +457,21 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     'pipe:1'                # Output to stdout
                 ]
 
+                # OBSERVABILITY: FFmpeg timing start
+                ffmpeg_start_time = datetime.now()
+                ffmpeg_start_timestamp = ffmpeg_start_time.timestamp() * 1000  # milliseconds
+
                 # STRUCTURED LOGGING: FFmpeg processing stage
                 ffmpeg_context = {
                     **pipeline_context,
                     "pipeline_stage": "ffmpeg_webm_opus",
                     "ffmpeg_cmd": " ".join(ffmpeg_cmd),
-                    "input_bytes": len(audio_bytes)
+                    "input_bytes": len(audio_bytes),
+                    "ffmpeg_start_timestamp": ffmpeg_start_timestamp
                 }
                 logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG: {ffmpeg_context}")
 
-                # Run FFmpeg process
+                # Run FFmpeg process with timing
                 process = subprocess.run(
                     ffmpeg_cmd,
                     input=audio_bytes,
@@ -462,32 +479,41 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     timeout=10  # 10 second timeout
                 )
 
+                # OBSERVABILITY: FFmpeg timing end
+                ffmpeg_end_time = datetime.now()
+                ffmpeg_end_timestamp = ffmpeg_end_time.timestamp() * 1000  # milliseconds
+                ffmpeg_latency_ms = ffmpeg_end_timestamp - ffmpeg_start_timestamp
+
                 if process.returncode == 0 and process.stdout:
                     # Convert PCM bytes to numpy array
                     audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                     audio_array = audio_array / 32768.0  # Normalize from int16 to float32
 
-                    # STRUCTURED LOGGING: FFmpeg success
+                    # STRUCTURED LOGGING: FFmpeg success with timing
                     success_context = {
                         **ffmpeg_context,
                         "pipeline_stage": "ffmpeg_success",
                         "output_samples": len(audio_array),
                         "pcm_bytes": len(process.stdout),
                         "sample_rate": 16000,
-                        "channels": 1
+                        "channels": 1,
+                        "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
+                        "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
                     logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS: {success_context}")
                 else:
                     # Log FFmpeg error for debugging
                     ffmpeg_error = process.stderr.decode('utf-8') if process.stderr else "Unknown FFmpeg error"
 
-                    # STRUCTURED LOGGING: FFmpeg failure
+                    # STRUCTURED LOGGING: FFmpeg failure with timing
                     error_context = {
                         **ffmpeg_context,
                         "pipeline_stage": "ffmpeg_error",
                         "return_code": process.returncode,
                         "stderr": ffmpeg_error,
-                        "stdout_length": len(process.stdout) if process.stdout else 0
+                        "stdout_length": len(process.stdout) if process.stdout else 0,
+                        "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
+                        "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
                     logger.error(f"❌ AUDIO_PIPELINE_FFMPEG_ERROR: {error_context}")
                     raise Exception(f"FFmpeg WebM processing failed: {ffmpeg_error}")
@@ -592,14 +618,19 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 if queue_size >= max_size * 0.9:  # 90% full threshold
                     logger.warning(f"⚠️ STT queue nearly full: {queue_size}/{max_size}")
 
-            # STRUCTURED LOGGING: STT queue stage
+            # OBSERVABILITY: Queue timing start
+            queue_enqueue_time = datetime.now()
+            queue_enqueue_timestamp = queue_enqueue_time.timestamp() * 1000  # milliseconds
+
+            # STRUCTURED LOGGING: STT queue stage with timing
             queue_context = {
                 **pipeline_context,
                 "pipeline_stage": "stt_queue",
                 "audio_samples": len(audio_array),
                 "queue_size": stt_service._audio_queue.qsize() if hasattr(stt_service, '_audio_queue') else "unknown",
                 "is_recording": getattr(stt_service, '_is_recording', False),
-                "processing_thread_alive": processing_thread_active
+                "processing_thread_alive": processing_thread_active,
+                "queue_enqueue_timestamp": queue_enqueue_timestamp
             }
             logger.info(f"📡 AUDIO_PIPELINE_STT_QUEUE: {queue_context}")
 
@@ -614,6 +645,10 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         "queue_method": "interface"
                     }
                     logger.info(f"✅ AUDIO_PIPELINE_STT_QUEUE_SUCCESS: {success_context}")
+
+                    # OBSERVABILITY: Record successful chunk processing
+                    if connection:
+                        connection.record_chunk_processed(success=True)
                 else:
                     # STRUCTURED LOGGING: Queue failure
                     failure_context = {
@@ -623,6 +658,10 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         "reason": "service_not_recording"
                     }
                     logger.warning(f"⚠️ AUDIO_PIPELINE_STT_QUEUE_FAILURE: {failure_context}")
+
+                    # OBSERVABILITY: Record failed chunk processing
+                    if connection:
+                        connection.record_chunk_processed(success=False)
             else:
                 # Fallback to direct access if interface not available
                 if hasattr(stt_service, '_audio_queue'):
@@ -659,6 +698,25 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 logger.debug(f"🔍 STT service available: {hasattr(stt_agent, 'stt_service')}")
                 if hasattr(stt_agent, 'stt_service'):
                     logger.debug(f"🔍 Queue interface available: {hasattr(stt_agent.stt_service, 'queue_audio_chunk')}")
+
+            # OBSERVABILITY: Record failed chunk processing
+            if connection:
+                connection.record_chunk_processed(success=False)
+
+        # OBSERVABILITY: Check for unprocessed chunk alerts
+        if connection:
+            unprocessed_count = connection.get_unprocessed_chunk_count(60)  # 60 second window
+            if unprocessed_count >= 5:  # Alert threshold
+                alert_context = {
+                    **pipeline_context,
+                    "pipeline_stage": "unprocessed_chunk_alert",
+                    "unprocessed_chunks_60s": unprocessed_count,
+                    "total_chunks_processed": connection.total_chunks_processed,
+                    "total_chunks_dropped": connection.total_chunks_dropped,
+                    "alert_threshold": 5,
+                    "window_seconds": 60
+                }
+                logger.error(f"🚨 UNPROCESSED_CHUNK_ALERT: {alert_context}")
 
     except Exception as e:
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
@@ -860,6 +918,52 @@ async def serve_frontend():
             </body>
         </html>
         """)
+
+async def periodic_state_dump():
+    """
+    OBSERVABILITY: Periodic internal state dump for system health monitoring
+    Logs comprehensive system state every 60 seconds at DEBUG level
+    """
+    while True:
+        try:
+            await asyncio.sleep(60)  # 60 second interval
+
+            # Get all active conversation systems
+            active_systems = []
+            for connection_id, connection in websocket_manager.connections.items():
+                if hasattr(connection, 'conversation_session_id') and connection.conversation_session_id:
+                    system_state = {
+                        "connection_id": connection_id,
+                        "connection_stream_id": connection.connection_stream_id,
+                        "session_id": connection.conversation_session_id,
+                        "connection_info": connection.get_connection_info()
+                    }
+                    active_systems.append(system_state)
+
+            # STRUCTURED LOGGING: Periodic state dump
+            state_dump_context = {
+                "pipeline_stage": "periodic_state_dump",
+                "dump_timestamp": datetime.now().timestamp() * 1000,
+                "active_connections": len(websocket_manager.connections),
+                "active_systems": len(active_systems),
+                "websocket_manager_state": {
+                    "total_connections": len(websocket_manager.connections),
+                    "connection_details": active_systems
+                }
+            }
+
+            # Log at DEBUG level for passive monitoring
+            logger.debug(f"🔍 PERIODIC_STATE_DUMP: {state_dump_context}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in periodic state dump: {e}")
+
+# Start periodic state dump task
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on application startup"""
+    asyncio.create_task(periodic_state_dump())
+    logger.info("🚀 Periodic state dump task started (60s interval)")
 
 if __name__ == "__main__":
     # Run the server
