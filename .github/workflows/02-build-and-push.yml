@@ -51,9 +51,6 @@ jobs:
     - name: "☁️ Set up Google Cloud CLI"
       uses: google-github-actions/setup-gcloud@v2
 
-    - name: "🐳 Configure Docker for GCR"
-      run: gcloud auth configure-docker
-
     - name: "🏷️ Generate image tags"
       id: tags
       run: |
@@ -103,21 +100,39 @@ jobs:
         echo "🏷️ Generated labels: $LABELS"
         echo "labels=$LABELS" >> $GITHUB_OUTPUT
 
-    - name: "🐳 Set up Docker Buildx"
-      uses: docker/setup-buildx-action@v3
-
-    - name: "🏗️ Build and push Docker image"
+    - name: "🏗️ Build and push with Cloud Build"
       id: build
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        file: devops/Dockerfile
-        push: true
-        tags: ${{ steps.tags.outputs.tags }}
-        labels: ${{ steps.labels.outputs.labels }}
-        cache-from: type=gha
-        cache-to: type=gha,mode=max
-        platforms: linux/amd64
+      run: |
+        echo "🏗️ Building and pushing image with gcloud builds submit..."
+        echo "📋 Build configuration:"
+        echo "  - Dockerfile: devops/Dockerfile"
+        echo "  - Primary tag: ${{ steps.tags.outputs.build-tag }}"
+        echo "  - All tags: ${{ steps.tags.outputs.tags }}"
+
+        # Parse tags into individual tag arguments
+        TAGS_ARG=""
+        IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
+        for tag in "${TAG_ARRAY[@]}"; do
+          TAGS_ARG="$TAGS_ARG --tag $tag"
+        done
+
+        echo "🏷️ Tag arguments: $TAGS_ARG"
+
+        # Build and push using Cloud Build
+        gcloud builds submit \
+          --dockerfile=devops/Dockerfile \
+          $TAGS_ARG \
+          --machine-type=e2-highcpu-8 \
+          --disk-size=100GB \
+          --timeout=1200s \
+          .
+
+        echo "✅ Cloud Build completed successfully"
+
+        # Get the image digest for verification
+        IMAGE_DIGEST=$(gcloud container images describe ${{ steps.tags.outputs.image-base }}:${{ steps.tags.outputs.build-tag }} --format="value(image_summary.digest)")
+        echo "📋 Image digest: $IMAGE_DIGEST"
+        echo "digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
 
     - name: "📋 Generate build summary"
       run: |

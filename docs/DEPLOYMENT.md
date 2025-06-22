@@ -8,9 +8,10 @@ This guide provides comprehensive instructions for deploying Econome using the e
 
 ### **Required Tools**
 - Google Cloud CLI (`gcloud`)
-- Docker
 - Git
 - GitHub CLI (`gh`) - optional but recommended
+
+**Note**: Docker is not required locally as builds are performed using Google Cloud Build.
 
 ### **Google Cloud Setup**
 1. **Create or select a GCP project**
@@ -93,7 +94,7 @@ base64 -w 0 econome-builder-key.json         # Linux
 ```
 01-Test & Validate → 02-Build & Push → 03-Deploy Staging → 04-Deploy Production
        ↓                    ↓                ↓                     ↓
-   • Unit Tests         • Build Image    • Auto Deploy        • Manual Approval
+   • Unit Tests         • Cloud Build    • Auto Deploy        • Manual Approval
    • Security Scan      • Push to GCR    • Integration Tests   • Production Deploy
    • Code Quality       • Tag Images     • Health Checks       • Validation Tests
    • Docker Build       • Cleanup Old    • E2E Tests          • Monitoring
@@ -137,9 +138,28 @@ git push origin main
 ```
 
 **What happens**:
-1. `02-build-and-push.yml` builds and pushes images
+1. `02-build-and-push.yml` builds and pushes images using Google Cloud Build
 2. `03-deploy-staging.yml` deploys to staging automatically
 3. Staging tests run and validate deployment
+
+### **Container Build Process**
+
+The build process uses **Google Cloud Build** instead of local Docker builds for improved reliability:
+
+```bash
+# Cloud Build automatically:
+1. Builds container image using devops/Dockerfile
+2. Applies multiple tags (build-{number}, sha-{hash}, latest)
+3. Pushes to Google Container Registry (gcr.io)
+4. Provides reliable tag creation and verification
+```
+
+**Benefits of Cloud Build**:
+- ✅ **Reliable Tagging**: No issues with missing or untagged images
+- ✅ **Native GCP Integration**: Seamless authentication and registry access
+- ✅ **Better Performance**: Optimized for GCR with faster push/pull
+- ✅ **Consistent Environment**: Same build environment every time
+- ✅ **Enhanced Security**: No need for Docker daemon in CI/CD
 
 ### **3. Production Deployment**
 
@@ -215,10 +235,16 @@ gh workflow run "99 - Manual Operations" \
 gh run list --workflow="02 - Build & Push"
 gh run view RUN_ID --log
 
+# Check Cloud Build logs (if needed)
+gcloud builds list --limit=5
+gcloud builds log BUILD_ID
+
 # Common fixes
 - Check requirements.txt syntax
-- Verify Dockerfile syntax
+- Verify Dockerfile syntax (devops/Dockerfile)
 - Ensure all tests pass locally
+- Verify Cloud Build API is enabled
+- Check service account permissions for Cloud Build
 ```
 
 #### **Deployment Failures**
