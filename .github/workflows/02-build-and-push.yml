@@ -8,10 +8,11 @@ on:
     types: [completed]
     branches: [ main ]
 
-# Security: Minimal required permissions
+# Security: Required permissions for build, push, and workflow triggering
 permissions:
   contents: read
-  actions: read
+  actions: write  # Required to trigger staging deployment workflow
+  packages: write  # Required for container registry operations
 
 env:
   PROJECT_ID: econome-hackathon
@@ -125,9 +126,30 @@ jobs:
     - name: "🚀 Trigger staging deployment"
       run: |
         echo "🚀 Triggering staging deployment..."
+        echo "📋 Deployment parameters:"
+        echo "  - Image tag: ${{ github.run_number }}"
+        echo "  - Build ID: ${{ github.run_id }}"
+        echo "  - Repository: ${{ github.repository }}"
+
+        # Trigger the staging deployment workflow
         gh workflow run "03 - Deploy Staging" \
           --field image-tag="${{ github.run_number }}" \
-          --field build-id="${{ github.run_id }}"
+          --field build-id="${{ github.run_id }}" \
+          --repo "${{ github.repository }}"
+
+        echo "✅ Staging deployment workflow triggered successfully"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: "🔍 Verify workflow trigger"
+      run: |
+        echo "🔍 Verifying staging deployment workflow was triggered..."
+        sleep 5  # Give GitHub a moment to register the workflow run
+
+        # Check recent workflow runs
+        RECENT_RUNS=$(gh run list --workflow="03 - Deploy Staging" --limit=1 --json status,createdAt,conclusion)
+        echo "📊 Recent staging workflow runs:"
+        echo "$RECENT_RUNS"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -139,10 +161,16 @@ jobs:
         echo "- **Environment**: Staging" >> $GITHUB_STEP_SUMMARY
         echo "- **Image Tag**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
         echo "- **Build ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Triggered At**: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🔗 Links" >> $GITHUB_STEP_SUMMARY
         echo "- [View Staging Deployment Workflow](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
         echo "- [Staging Service URL](https://econome-staging-${{ env.PROJECT_ID }}.a.run.app)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ⏭️ Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "1. 🔍 Monitor the staging deployment workflow" >> $GITHUB_STEP_SUMMARY
+        echo "2. 🧪 Review staging test results" >> $GITHUB_STEP_SUMMARY
+        echo "3. 🚀 Trigger production deployment when ready" >> $GITHUB_STEP_SUMMARY
 
   # ===================================
   # CLEANUP OLD IMAGES
