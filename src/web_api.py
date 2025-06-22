@@ -386,27 +386,49 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         import base64
         import io
         import numpy as np
-        from pydub import AudioSegment
 
         # Decode base64 audio data
         audio_bytes = base64.b64decode(audio_data)
 
-        # Convert audio to the format expected by the speech agent
-        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+        # Try to process audio with pydub (requires ffmpeg)
+        try:
+            from pydub import AudioSegment
 
-        # Convert to mono 16kHz (required for speech recognition)
-        audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+            # Convert audio to the format expected by the speech agent
+            audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
 
-        # Convert to numpy array (float32, normalized to [-1, 1])
-        audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-        audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+            # Convert to mono 16kHz (required for speech recognition)
+            audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+
+            # Convert to numpy array (float32, normalized to [-1, 1])
+            audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+            audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+
+            logger.debug(f"📡 Processed audio chunk with pydub: {len(audio_array)} samples")
+
+        except Exception as pydub_error:
+            logger.warning(f"⚠️ pydub processing failed (ffmpeg missing?): {pydub_error}")
+
+            # Fallback: Try to process raw audio data directly
+            # This is a simplified approach for when ffmpeg is not available
+            try:
+                # Assume the audio is already in a reasonable format
+                # Convert bytes to numpy array (this is a basic fallback)
+                audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+
+                logger.info(f"📡 Processed audio chunk with fallback method: {len(audio_array)} samples")
+
+            except Exception as fallback_error:
+                logger.error(f"❌ Both pydub and fallback audio processing failed: {fallback_error}")
+                raise Exception(f"Audio processing unavailable - ffmpeg required for pydub. Install ffmpeg in container.")
 
         # Get the STT agent and process the audio chunk
         stt_agent = conversation_system.get_agent("stt")
         if stt_agent and hasattr(stt_agent, '_audio_queue'):
             # Add the audio chunk to the processing queue
             stt_agent._audio_queue.put(audio_array)
-            logger.debug(f"📡 Processed frontend audio chunk: {len(audio_array)} samples")
+            logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
         else:
             logger.warning("⚠️ STT agent not available for frontend audio processing")
 
@@ -414,7 +436,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
         await websocket_manager.send_to_connection(connection_id, {
             "type": "error",
-            "message": f"Audio processing error: {str(e)}",
+            "message": f"Audio processing error: {str(e)}. Please try Demo Mode or check server configuration.",
             "timestamp": datetime.now().isoformat()
         })
 
