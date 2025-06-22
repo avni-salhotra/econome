@@ -154,7 +154,7 @@ class ProductionSTTServiceV2:
         self._error_callback = None
         self._status_callback = None
 
-        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=chirp_2, buffer_size={self.max_queue_size})")
+        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=latest_short, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
@@ -351,7 +351,7 @@ class ProductionSTTServiceV2:
                         audio_channel_count=1,
                     ),
                     language_codes=["en-US"],
-                    model="chirp_2",  # OPTIMIZED: Latest & most accurate model
+                    model="latest_short",  # OPTIMIZED: Better for real-time streaming chunks
                     features=speech_v2.RecognitionFeatures(
                         enable_automatic_punctuation=True,
                         enable_word_time_offsets=True,
