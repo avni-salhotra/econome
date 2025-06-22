@@ -53,6 +53,5 @@ options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
 
-serviceAccount: projects/econome-hackathon/serviceAccounts/econome-builder@econome-hackathon.iam.gserviceaccount.com
 # Overall timeout for the build process
 timeout: '1200s'
