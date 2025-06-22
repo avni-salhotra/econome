@@ -48,7 +48,7 @@ substitutions:
 options:
   machineType: 'E2_HIGHCPU_8'
   logging: CLOUD_LOGGING_ONLY
-  serviceAccount: econome-builder@econome-hackathon.iam.gserviceaccount.com
 
+serviceAccount: econome-builder@econome-hackathon.iam.gserviceaccount.com
 # Overall timeout for the deployment process
 timeout: '600s'
