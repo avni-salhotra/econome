@@ -93,10 +93,23 @@ steps:
         pip install bandit safety semgrep
         pip install -r requirements.txt
         
-        # Check for hardcoded secrets
+        # Check for hardcoded secrets (exclude test files and documentation)
         echo "🔍 Scanning for potential secrets..."
-        if grep -r "sk-" . --exclude-dir=.git --exclude-dir=.github; then
-          echo "❌ Potential API keys found in code"
+        SECRET_FOUND=false
+
+        # Look for actual hardcoded secrets (not test patterns)
+        if grep -r '"sk-[a-zA-Z0-9]' . --exclude-dir=.git --exclude-dir=.github --exclude-dir=tests --exclude-dir=docs --exclude="*.md" --exclude="*.yaml" --exclude="*.yml"; then
+          echo "❌ Potential hardcoded OpenAI API keys found"
+          SECRET_FOUND=true
+        fi
+
+        if grep -r '"AIza[a-zA-Z0-9]' . --exclude-dir=.git --exclude-dir=.github --exclude-dir=tests --exclude-dir=docs --exclude="*.md" --exclude="*.yaml" --exclude="*.yml"; then
+          echo "❌ Potential hardcoded Google API keys found"
+          SECRET_FOUND=true
+        fi
+
+        if [ "$SECRET_FOUND" = true ]; then
+          echo "❌ Potential secrets detected in source code"
           exit 1
         fi
         

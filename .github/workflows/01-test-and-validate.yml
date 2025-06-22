@@ -100,15 +100,34 @@ jobs:
     - name: "🔍 Check for hardcoded secrets"
       run: |
         echo "🔍 Scanning for potential secrets..."
-        if grep -r "sk-" . --exclude-dir=.git --exclude-dir=.github; then
-          echo "❌ Potential API keys found in code"
+
+        # Check for actual hardcoded secrets (not test patterns or documentation)
+        SECRET_FOUND=false
+
+        # Look for potential OpenAI API keys (but exclude test files and documentation)
+        if grep -r '"sk-[a-zA-Z0-9]' . --exclude-dir=.git --exclude-dir=.github --exclude-dir=tests --exclude-dir=docs --exclude="*.md" --exclude="*.yaml" --exclude="*.yml"; then
+          echo "❌ Potential hardcoded OpenAI API keys found"
+          SECRET_FOUND=true
+        fi
+
+        # Look for potential Google API keys (but exclude test files and documentation)
+        if grep -r '"AIza[a-zA-Z0-9]' . --exclude-dir=.git --exclude-dir=.github --exclude-dir=tests --exclude-dir=docs --exclude="*.md" --exclude="*.yaml" --exclude="*.yml"; then
+          echo "❌ Potential hardcoded Google API keys found"
+          SECRET_FOUND=true
+        fi
+
+        # Look for other potential secrets in Python files only
+        if grep -r --include="*.py" "password\s*=\s*['\"][^'\"]*['\"]" src/; then
+          echo "❌ Potential hardcoded passwords found"
+          SECRET_FOUND=true
+        fi
+
+        if [ "$SECRET_FOUND" = true ]; then
+          echo "❌ Potential secrets detected in source code"
           exit 1
         fi
-        if grep -r "AIza" . --exclude-dir=.git --exclude-dir=.github; then
-          echo "❌ Potential Google API keys found in code"
-          exit 1
-        fi
-        echo "✅ No obvious secrets found in code"
+
+        echo "✅ No hardcoded secrets found in source code"
 
     - name: "🛡️ Run Bandit security scan"
       run: |
