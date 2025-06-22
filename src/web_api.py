@@ -339,6 +339,13 @@ async def conversation_websocket(websocket: WebSocket):
             except Exception as e:
                 logger.error(f"❌ Cleanup error for {connection_id}: {e}")
         
+        # Clean up WebM chunk buffer for this connection
+        try:
+            from .webm_muxer import cleanup_buffer
+            cleanup_buffer(connection_id)
+        except Exception as e:
+            logger.error(f"❌ WebM buffer cleanup error for {connection_id}: {e}")
+        
         websocket_manager.disconnect(connection_id)
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
@@ -438,9 +445,37 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         }
         logger.info(f"🎵 AUDIO_PIPELINE_START: {pipeline_context}")
 
-        # FIXED: Handle WebM/Opus with robust multi-strategy approach for headerless chunks
+        # STRATEGY A: WebM Chunk Buffering & Muxing for headerless chunks
         if 'webm' in mime_type.lower() and 'opus' in mime_type.lower():
             try:
+                # Import the WebM muxing module
+                from .webm_muxer import get_or_create_buffer
+                
+                # Get or create buffer for this connection
+                webm_buffer = get_or_create_buffer(connection_id)
+                
+                # Add chunk to buffer and check if ready for processing
+                should_process, muxed_bytes = webm_buffer.add_chunk(audio_bytes, mime_type)
+                
+                if not should_process:
+                    # Chunk is buffered, waiting for more chunks
+                    buffer_stats = webm_buffer.get_buffer_stats()
+                    logger.info(f"📦 WEBM_CHUNK_BUFFERED: {buffer_stats}")
+                    return  # Exit early, chunk is buffered
+                
+                # Determine which bytes to process
+                if muxed_bytes is not None:
+                    # Use muxed bytes from buffer
+                    processing_bytes = muxed_bytes
+                    processing_strategy = "muxed_buffer"
+                    logger.info(f"🔧 Processing muxed buffer ({len(muxed_bytes)} bytes)")
+                else:
+                    # Use original bytes (first chunk with header)
+                    processing_bytes = audio_bytes
+                    processing_strategy = "first_chunk_header"
+                    logger.info(f"🔧 Processing first chunk with header ({len(audio_bytes)} bytes)")
+                
+                # Process with FFmpeg using headerless matroska strategy
                 import subprocess
 
                 # OBSERVABILITY: FFmpeg timing start
@@ -450,13 +485,14 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 # STRUCTURED LOGGING: FFmpeg processing stage
                 ffmpeg_context = {
                     **pipeline_context,
-                    "pipeline_stage": "ffmpeg_webm_opus",
-                    "input_bytes": len(audio_bytes),
+                    "pipeline_stage": "ffmpeg_webm_opus_strategy_a",
+                    "input_bytes": len(processing_bytes),
+                    "processing_strategy": processing_strategy,
                     "ffmpeg_start_timestamp": ffmpeg_start_timestamp
                 }
-                logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG: {ffmpeg_context}")
+                logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG_STRATEGY_A: {ffmpeg_context}")
 
-                # STRATEGY 1: Try headerless WebM parsing with lenient matroska demuxer
+                # Use headerless WebM parsing (Strategy A optimized)
                 ffmpeg_cmd_headerless = [
                     'ffmpeg',
                     '-f', 'matroska',       # More lenient than 'webm' for headerless chunks
@@ -472,10 +508,10 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     'pipe:1'                # Output to stdout
                 ]
 
-                # Try headerless parsing first
+                # Process with FFmpeg
                 process = subprocess.run(
                     ffmpeg_cmd_headerless,
-                    input=audio_bytes,
+                    input=processing_bytes,
                     capture_output=True,
                     timeout=10
                 )
@@ -485,49 +521,16 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 ffmpeg_end_timestamp = ffmpeg_end_time.timestamp() * 1000  # milliseconds
                 ffmpeg_latency_ms = ffmpeg_end_timestamp - ffmpeg_start_timestamp
 
-                success = False
                 if process.returncode == 0 and process.stdout:
-                    # Strategy 1 succeeded
+                    # Strategy A succeeded
                     audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                     audio_array = audio_array / 32768.0  # Normalize from int16 to float32
-                    success = True
-                    strategy_used = "headerless_matroska"
-                else:
-                    # STRATEGY 2: Fallback to Ogg/Opus decoding
-                    logger.warning("⚠️ Headerless WebM parsing failed, trying Ogg/Opus decoding")
                     
-                    ffmpeg_cmd_opus = [
-                        'ffmpeg',
-                        '-f', 'ogg',            # FIXED: Use 'ogg' format for Opus streams
-                        '-i', 'pipe:0',
-                        '-f', 's16le',
-                        '-acodec', 'pcm_s16le',
-                        '-ar', '16000',
-                        '-ac', '1',
-                        '-loglevel', 'error',
-                        'pipe:1'
-                    ]
-                    
-                    process = subprocess.run(
-                        ffmpeg_cmd_opus,
-                        input=audio_bytes,
-                        capture_output=True,
-                        timeout=10
-                    )
-                    
-                    if process.returncode == 0 and process.stdout:
-                        # Strategy 2 succeeded
-                        audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
-                        audio_array = audio_array / 32768.0
-                        success = True
-                        strategy_used = "ogg_opus"
-                
-                if success:
-                    # STRUCTURED LOGGING: FFmpeg success with timing and strategy
+                    # STRUCTURED LOGGING: FFmpeg success with Strategy A
                     success_context = {
                         **ffmpeg_context,
-                        "pipeline_stage": "ffmpeg_success",
-                        "strategy_used": strategy_used,
+                        "pipeline_stage": "ffmpeg_success_strategy_a",
+                        "strategy_used": "chunk_buffering_muxing",
                         "output_samples": len(audio_array),
                         "pcm_bytes": len(process.stdout),
                         "sample_rate": 16000,
@@ -535,31 +538,31 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
                         "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
-                    logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS: {success_context}")
+                    logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS_STRATEGY_A: {success_context}")
                 else:
-                    # Both strategies failed - log detailed error
+                    # Strategy A failed - log detailed error
                     ffmpeg_error = process.stderr.decode('utf-8') if process.stderr else "Unknown FFmpeg error"
                     
-                    # STRUCTURED LOGGING: FFmpeg failure with timing
+                    # STRUCTURED LOGGING: FFmpeg failure
                     error_context = {
                         **ffmpeg_context,
-                        "pipeline_stage": "ffmpeg_error",
-                        "strategies_attempted": ["headerless_matroska", "ogg_opus"],
+                        "pipeline_stage": "ffmpeg_error_strategy_a",
+                        "strategy_attempted": "chunk_buffering_muxing",
                         "return_code": process.returncode,
                         "stderr": ffmpeg_error,
                         "stdout_length": len(process.stdout) if process.stdout else 0,
                         "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
                         "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
-                    logger.error(f"❌ AUDIO_PIPELINE_FFMPEG_ERROR: {error_context}")
-                    raise Exception(f"FFmpeg WebM processing failed (both strategies): {ffmpeg_error}")
+                    logger.error(f"❌ AUDIO_PIPELINE_FFMPEG_ERROR_STRATEGY_A: {error_context}")
+                    raise Exception(f"FFmpeg WebM Strategy A processing failed: {ffmpeg_error}")
 
             except subprocess.TimeoutExpired:
-                logger.error("❌ FFmpeg process timed out")
-                raise Exception("FFmpeg process timed out during WebM processing")
+                logger.error("❌ FFmpeg process timed out (Strategy A)")
+                raise Exception("FFmpeg process timed out during WebM Strategy A processing")
             except Exception as ffmpeg_error:
-                logger.error(f"❌ FFmpeg WebM processing error: {ffmpeg_error}")
-                raise Exception(f"FFmpeg WebM processing failed: {str(ffmpeg_error)}")
+                logger.error(f"❌ FFmpeg WebM Strategy A processing error: {ffmpeg_error}")
+                raise Exception(f"FFmpeg WebM Strategy A processing failed: {str(ffmpeg_error)}")
 
         else:
             # Use pydub for other formats (MP4, WAV, etc.)
