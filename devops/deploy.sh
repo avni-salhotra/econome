@@ -193,6 +193,19 @@ deploy_service() {
         print_status "Deploying to environment: $ENVIRONMENT"
         print_status "Using image tag: $IMAGE_TAG"
 
+        # Debug: Validate secrets exist before deployment
+        print_status "🔍 Validating secrets before deployment..."
+        gcloud secrets describe speech-credentials --project="$PROJECT_ID" || {
+            print_error "Speech credentials secret not found!"
+            exit 1
+        }
+        gcloud secrets describe gemini-credentials --project="$PROJECT_ID" || {
+            print_error "Gemini credentials secret not found!"
+            exit 1
+        }
+        print_success "✅ All secrets validated"
+
+        print_status "🚀 Starting Cloud Run deployment..."
         gcloud run deploy "$SERVICE_NAME" \
             --image="gcr.io/$PROJECT_ID/econome:$IMAGE_TAG" \
             --platform=managed \
@@ -204,8 +217,8 @@ deploy_service() {
             --timeout=3600 \
             --max-instances=10 \
             --set-env-vars="GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=8080" \
-            --set-secrets="/app/secrets/speech-credentials.json=speech-credentials:latest" \
-            --set-secrets="/app/secrets/gemini-credentials.json=gemini-credentials:latest"
+            --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
+            --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest"
     else
         print_status "Building and deploying Econome to Cloud Run..."
 

@@ -118,7 +118,8 @@ class ProductionSTTServiceV2:
             # Try multiple credential paths (for Cloud Run and local development)
             credential_paths = [
                 credentials_path,  # Default path (local development)
-                "/app/secrets/speech-credentials.json",  # New Cloud Run path
+                "/app/secrets/speech/credentials.json",  # New Cloud Run path (separate directories)
+                "/app/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
                 "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
             ]
 

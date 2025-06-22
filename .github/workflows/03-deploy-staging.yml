@@ -69,10 +69,22 @@ jobs:
         echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
         echo "🏷️ Using image tag: $IMAGE_TAG"
 
+    - name: "🔍 Validate secrets before deployment"
+      run: |
+        echo "🔍 Validating secrets exist in Secret Manager..."
+        gcloud secrets describe speech-credentials --project=${{ env.PROJECT_ID }} || exit 1
+        gcloud secrets describe gemini-credentials --project=${{ env.PROJECT_ID }} || exit 1
+        echo "✅ All secrets validated successfully"
+
     - name: "🚀 Deploy to Cloud Run Staging"
       id: deploy
       run: |
         echo "🚀 Deploying to staging environment..."
+        echo "📋 Deployment configuration:"
+        echo "  - Service: ${{ env.SERVICE_NAME }}"
+        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}"
+        echo "  - Region: ${{ env.REGION }}"
+        echo "  - Environment: ${{ env.ENVIRONMENT }}"
         
         gcloud run deploy ${{ env.SERVICE_NAME }} \
           --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}" \
@@ -86,8 +98,8 @@ jobs:
           --max-instances=3 \
           --min-instances=0 \
           --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},PORT=8080,ENVIRONMENT=${{ env.ENVIRONMENT }}" \
-          --set-secrets="/app/secrets/speech-credentials.json=speech-credentials:latest" \
-          --set-secrets="/app/secrets/gemini-credentials.json=gemini-credentials:latest" \
+          --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
+          --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
           --tag="build-${{ inputs.build-id || github.run_id }}" \
           --format="value(status.url)"
 
