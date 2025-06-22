@@ -18,6 +18,10 @@ on:
         required: false
         default: 'latest'
         type: string
+      build-id:
+        description: 'Build ID for tracking (optional)'
+        required: false
+        type: string
 
 # Security: Deployment permissions
 permissions:
