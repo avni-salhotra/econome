@@ -133,6 +133,7 @@ jobs:
           echo "🏗️ Building and pushing: $tag"
 
           # Submit build asynchronously to avoid log streaming issues
+          echo "🚀 Submitting build for: $tag"
           BUILD_OUTPUT=$(gcloud builds submit \
             --config=cloudbuild-temp.yaml \
             --substitutions="_IMAGE_TAG=$tag" \
@@ -140,17 +141,28 @@ jobs:
             --disk-size=100GB \
             --timeout=1200s \
             --async \
-            --format="value(metadata.build.id)" \
             . 2>&1)
 
           if [[ $? -eq 0 ]]; then
-            BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -E '^[a-f0-9-]+$' | head -1)
-            if [[ -n "$BUILD_ID" ]]; then
+            # Debug: Show the raw output
+            echo "🔍 Raw build output:"
+            echo "$BUILD_OUTPUT"
+            echo "---"
+
+            # Extract build ID from the Cloud Build URL in the output
+            BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -o 'builds/[a-f0-9-]\+' | sed 's/builds\///' | head -1)
+
+            echo "🔍 Extracted build ID: '$BUILD_ID'"
+
+            if [[ -n "$BUILD_ID" && "$BUILD_ID" =~ ^[a-f0-9-]+$ ]]; then
               BUILD_IDS+=("$BUILD_ID")
               echo "✅ Build submitted successfully: $BUILD_ID"
               echo "🔗 Build URL: https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=${{ env.PROJECT_ID }}"
             else
-              echo "⚠️ Could not extract build ID from output: $BUILD_OUTPUT"
+              echo "❌ Could not extract valid build ID from output"
+              echo "Expected format: [a-f0-9-]+"
+              echo "Got: '$BUILD_ID'"
+              exit 1
             fi
           else
             echo "❌ Build submission failed for $tag"
@@ -159,8 +171,14 @@ jobs:
           fi
         done
 
+        # Check if we have any builds to monitor
+        if [ ${#BUILD_IDS[@]} -eq 0 ]; then
+          echo "❌ No builds were submitted successfully"
+          exit 1
+        fi
+
         # Wait for all builds to complete
-        echo "⏳ Waiting for builds to complete..."
+        echo "⏳ Waiting for ${#BUILD_IDS[@]} builds to complete..."
         for BUILD_ID in "${BUILD_IDS[@]}"; do
           echo "🔍 Checking build status: $BUILD_ID"
 
