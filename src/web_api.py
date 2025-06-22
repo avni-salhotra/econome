@@ -1208,7 +1208,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
 
             # Stop the conversation recording
             logger.info(f"🛑 Stopping recording for {connection_id}")
-            result = conversation_system.stop_conversation()
+            result = await conversation_system.stop_conversation()
 
             # Send response
             await websocket_manager.send_to_connection(connection_id, {
