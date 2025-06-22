@@ -672,6 +672,23 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
             queue_enqueue_time = datetime.now()
             queue_enqueue_timestamp = queue_enqueue_time.timestamp() * 1000  # milliseconds
 
+            # DEEP DEBUG: Log audio_array details before queuing for STT
+            audio_array_debug = {
+                **pipeline_context,
+                "pipeline_stage": "stt_audio_array_debug",
+                "audio_array_shape": audio_array.shape,
+                "audio_array_dtype": str(audio_array.dtype),
+                "audio_array_min": float(audio_array.min()),
+                "audio_array_max": float(audio_array.max()),
+                "audio_array_mean": float(audio_array.mean()),
+                "audio_array_std": float(audio_array.std()),
+                "has_non_zero_samples": bool(np.any(audio_array != 0)),
+                "non_zero_sample_count": int(np.count_nonzero(audio_array)),
+                "sample_rate_expected": 16000,  # What STT expects
+                "timestamp": datetime.now().isoformat()
+            }
+            logger.info(f"🔍 DEBUG_STT_AUDIO_ARRAY: {audio_array_debug}")
+
             # STRUCTURED LOGGING: STT queue stage with timing
             queue_context = {
                 **pipeline_context,

@@ -323,7 +323,7 @@ class ProductionSTTServiceV2:
         print("🏁 Mock audio processing thread finished")
 
     def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
-        """Transcribe audio chunk using Google Speech V2 with Chirp 2 model"""
+        """Transcribe audio chunk using Google Speech V2 with latest_short model"""
         try:
             # Check if recording is still active before processing
             if not self._is_recording:
@@ -332,8 +332,12 @@ class ProductionSTTServiceV2:
 
             self._chunk_counter += 1
 
+            # DEEP DEBUG: Log chunk processing start
+            print(f"🔍 DEBUG_STT_START: chunk={self._chunk_counter}, audio_shape={audio_chunk.shape}, has_credentials={self._has_credentials}")
+
             if not self._has_credentials:
                 # Mock mode for development
+                print(f"🎭 DEBUG_STT_MOCK_MODE: Generating mock transcript for chunk {self._chunk_counter}")
                 self._generate_mock_transcript()
                 return
 
@@ -341,7 +345,19 @@ class ProductionSTTServiceV2:
             audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
 
-            # OPTIMIZED: Create Speech V2 request with Chirp 2 model, without diarization_config
+            # DEEP DEBUG: Log audio conversion details
+            audio_debug = {
+                "chunk_id": self._chunk_counter,
+                "original_shape": audio_chunk.shape,
+                "original_dtype": str(audio_chunk.dtype),
+                "original_min": float(audio_chunk.min()),
+                "original_max": float(audio_chunk.max()),
+                "converted_bytes_length": len(audio_bytes),
+                "sample_rate": self.sample_rate
+            }
+            print(f"🔍 DEBUG_STT_AUDIO_CONVERSION: {audio_debug}")
+
+            # OPTIMIZED: Create Speech V2 request with latest_short model
             request = speech_v2.RecognizeRequest(
                 recognizer=self.recognizer,
                 config=speech_v2.RecognitionConfig(
@@ -361,14 +377,51 @@ class ProductionSTTServiceV2:
                 content=audio_bytes
             )
 
+            # DEEP DEBUG: Log STT API call details
+            stt_request_debug = {
+                "chunk_id": self._chunk_counter,
+                "model": "latest_short",
+                "recognizer": self.recognizer,
+                "audio_bytes_length": len(audio_bytes),
+                "sample_rate": self.sample_rate,
+                "encoding": "LINEAR16"
+            }
+            print(f"🔍 DEBUG_STT_API_REQUEST: {stt_request_debug}")
+
             # Call Speech V2 API
+            print(f"🔍 DEBUG_STT_API_CALLING: Making Speech V2 API call for chunk {self._chunk_counter}")
             response = self.speech_client.recognize(request=request)
+            print(f"🔍 DEBUG_STT_API_RESPONSE: Received response for chunk {self._chunk_counter}, type={type(response)}")
+
+            # DEEP DEBUG: Log response details
+            response_debug = {
+                "chunk_id": self._chunk_counter,
+                "has_results": hasattr(response, 'results') and len(response.results) > 0,
+                "results_count": len(response.results) if hasattr(response, 'results') else 0
+            }
+            
+            if hasattr(response, 'results') and response.results:
+                result = response.results[0]
+                response_debug.update({
+                    "has_alternatives": hasattr(result, 'alternatives') and len(result.alternatives) > 0,
+                    "alternatives_count": len(result.alternatives) if hasattr(result, 'alternatives') else 0
+                })
+                
+                if hasattr(result, 'alternatives') and result.alternatives:
+                    alt = result.alternatives[0]
+                    response_debug.update({
+                        "transcript_text": getattr(alt, 'transcript', ''),
+                        "confidence": getattr(alt, 'confidence', 0.0)
+                    })
+            
+            print(f"🔍 DEBUG_STT_API_RESPONSE_DETAILS: {response_debug}")
 
             # Process response
             self._process_speech_response(response)
 
         except Exception as e:
             print(f"❌ Transcription error for chunk {self._chunk_counter}: {e}")
+            print(f"🔍 DEBUG_STT_ERROR_DETAILS: chunk={self._chunk_counter}, error_type={type(e)}, error_str={str(e)}")
             if self._error_callback:
                 self._error_callback("transcription", e)
     
