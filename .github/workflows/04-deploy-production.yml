@@ -157,10 +157,22 @@ jobs:
         echo "time=$DEPLOY_TIME" >> $GITHUB_OUTPUT
         echo "⏰ Deployment time: $DEPLOY_TIME"
 
+    - name: "🔍 Validate secrets before deployment"
+      run: |
+        echo "🔍 Validating secrets exist in Secret Manager..."
+        gcloud secrets describe speech-credentials --project=${{ env.PROJECT_ID }} || exit 1
+        gcloud secrets describe gemini-credentials --project=${{ env.PROJECT_ID }} || exit 1
+        echo "✅ All secrets validated successfully"
+
     - name: "🚀 Deploy to Production"
       id: deploy
       run: |
         echo "🚀 Deploying to production environment..."
+        echo "📋 Deployment configuration:"
+        echo "  - Service: ${{ env.SERVICE_NAME }}"
+        echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}"
+        echo "  - Region: ${{ env.REGION }}"
+        echo "  - Environment: ${{ env.ENVIRONMENT }}"
         
         gcloud run deploy ${{ env.SERVICE_NAME }} \
           --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}" \
@@ -173,9 +185,9 @@ jobs:
           --timeout=3600 \
           --max-instances=10 \
           --min-instances=1 \
-          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},PORT=8080,ENVIRONMENT=${{ env.ENVIRONMENT }}" \
-          --set-secrets="/app/secrets/speech-credentials.json=speech-credentials:latest" \
-          --set-secrets="/app/secrets/gemini-credentials.json=gemini-credentials:latest" \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=${{ env.ENVIRONMENT }}" \
+          --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
+          --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
           --tag="prod-${{ github.run_id }}" \
           --format="value(status.url)"
 
