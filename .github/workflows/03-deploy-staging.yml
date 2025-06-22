@@ -174,7 +174,7 @@ jobs:
         fi
 
         echo "🚀 Starting Cloud Run deployment..."
-        gcloud run deploy ${{ env.SERVICE_NAME }} \
+        SERVICE_URL=$(gcloud run deploy ${{ env.SERVICE_NAME }} \
           --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}" \
           --platform=managed \
           --region=${{ env.REGION }} \
@@ -189,7 +189,11 @@ jobs:
           --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
           --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
           --tag="build-${{ inputs.build-id || github.run_id }}" \
-          --format="value(status.url)"
+          --format="value(status.url)")
+
+        echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+        echo "✅ Deployment completed successfully"
+        echo "🌐 Service URL: $SERVICE_URL"
 
     - name: "🔍 Get service URL"
       id: get-url
