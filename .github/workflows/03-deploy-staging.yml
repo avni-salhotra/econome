@@ -65,10 +65,20 @@ jobs:
     - name: "🏷️ Set image tag"
       id: image-tag
       run: |
-        # Use provided tag or fall back to build number format
+        # Use provided tag or fall back to latest for manual deployments
         if [ -n "${{ inputs.image-tag }}" ]; then
           IMAGE_TAG="build-${{ inputs.image-tag }}"
-          echo "🏷️ Using provided build number: $IMAGE_TAG"
+          echo "🏷️ Using build tag: $IMAGE_TAG"
+
+          # Verify the image exists
+          if ! gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+            --filter="tags:$IMAGE_TAG" --format="value(tags)" | grep -q "$IMAGE_TAG"; then
+            echo "❌ Image with tag $IMAGE_TAG not found!"
+            echo "🔍 Available images:"
+            gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+              --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+            exit 1
+          fi
         else
           # Fall back to latest tag for manual deployments
           IMAGE_TAG="latest"
