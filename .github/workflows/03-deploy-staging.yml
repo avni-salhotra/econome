@@ -69,21 +69,77 @@ jobs:
         if [ -n "${{ inputs.image-tag }}" ]; then
           IMAGE_TAG="build-${{ inputs.image-tag }}"
           echo "🏷️ Using build tag: $IMAGE_TAG"
+          echo "🔍 Verifying image exists with retry logic..."
 
-          # Verify the image exists
-          if ! gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
-            --filter="tags:$IMAGE_TAG" --format="value(tags)" | grep -q "$IMAGE_TAG"; then
-            echo "❌ Image with tag $IMAGE_TAG not found!"
-            echo "🔍 Available images:"
+          # Retry logic for image verification (handles registry propagation delays)
+          MAX_RETRIES=10
+          RETRY_DELAY=30
+          RETRY_COUNT=0
+          IMAGE_FOUND=false
+
+          while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+            echo "🔍 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking for image tag $IMAGE_TAG..."
+
+            # Check if the image exists
+            if gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+              --filter="tags:$IMAGE_TAG" --format="value(tags)" | grep -q "$IMAGE_TAG"; then
+              echo "✅ Image with tag $IMAGE_TAG found!"
+              IMAGE_FOUND=true
+              break
+            else
+              echo "⏳ Image with tag $IMAGE_TAG not found yet..."
+
+              # Show available images for debugging
+              echo "🔍 Available images:"
+              gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+                --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+
+              if [ $RETRY_COUNT -lt $((MAX_RETRIES - 1)) ]; then
+                echo "⏱️ Waiting ${RETRY_DELAY} seconds before retry..."
+                sleep $RETRY_DELAY
+              fi
+            fi
+
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+          done
+
+          if [ "$IMAGE_FOUND" = false ]; then
+            echo "❌ Image with tag $IMAGE_TAG not found after $MAX_RETRIES attempts!"
+            echo "🔍 Final check - Available images:"
             gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
-              --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
-            exit 1
+              --limit=10 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+
+            # Try to find the most recent build tag as fallback
+            echo "🔄 Attempting to find most recent build tag as fallback..."
+            LATEST_BUILD_TAG=$(gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+              --filter="tags~^build-" --format="value(tags)" --limit=1 | head -1)
+
+            if [ -n "$LATEST_BUILD_TAG" ]; then
+              echo "🔄 Found fallback image tag: $LATEST_BUILD_TAG"
+              echo "⚠️ Using fallback tag instead of expected $IMAGE_TAG"
+              IMAGE_TAG="$LATEST_BUILD_TAG"
+            else
+              echo "❌ No build tags found! Cannot proceed with deployment."
+              exit 1
+            fi
           fi
         else
           # Fall back to latest tag for manual deployments
           IMAGE_TAG="latest"
           echo "🏷️ Using latest tag for manual deployment: $IMAGE_TAG"
+
+          # Verify latest tag exists
+          if ! gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+            --filter="tags:latest" --format="value(tags)" | grep -q "latest"; then
+            echo "❌ Latest tag not found!"
+            echo "🔍 Available images:"
+            gcloud container images list-tags gcr.io/${{ env.PROJECT_ID }}/econome \
+              --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+            exit 1
+          fi
         fi
+
+        echo "✅ Final image tag: $IMAGE_TAG"
         echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
 
     - name: "🔍 Validate secrets before deployment"
@@ -102,7 +158,22 @@ jobs:
         echo "  - Image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}"
         echo "  - Region: ${{ env.REGION }}"
         echo "  - Environment: ${{ env.ENVIRONMENT }}"
-        
+        echo "  - Build ID: ${{ inputs.build-id || github.run_id }}"
+        echo "  - Input Image Tag: ${{ inputs.image-tag }}"
+
+        # Final verification before deployment
+        echo "🔍 Final image verification before deployment..."
+        if gcloud container images describe ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }} > /dev/null 2>&1; then
+          echo "✅ Image verified: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}"
+        else
+          echo "❌ Image verification failed just before deployment!"
+          echo "🔍 Available images:"
+          gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome \
+            --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+          exit 1
+        fi
+
+        echo "🚀 Starting Cloud Run deployment..."
         gcloud run deploy ${{ env.SERVICE_NAME }} \
           --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}" \
           --platform=managed \

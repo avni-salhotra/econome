@@ -140,15 +140,46 @@ jobs:
       run: |
         echo "🔍 Verifying build-${{ github.run_number }} tag was created..."
 
-        # Check if the build tag exists
-        if gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
-          --filter="tags:build-${{ github.run_number }}" --format="value(tags)" | grep -q "build-${{ github.run_number }}"; then
-          echo "✅ build-${{ github.run_number }} tag exists"
-        else
-          echo "❌ build-${{ github.run_number }} tag not found!"
+        # Wait a moment for registry propagation
+        echo "⏱️ Waiting 10 seconds for registry propagation..."
+        sleep 10
+
+        # Retry logic for tag verification
+        MAX_RETRIES=5
+        RETRY_DELAY=10
+        RETRY_COUNT=0
+        TAG_FOUND=false
+
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ]; do
+          echo "🔍 Attempt $((RETRY_COUNT + 1))/$MAX_RETRIES: Checking for build-${{ github.run_number }} tag..."
+
+          if gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+            --filter="tags:build-${{ github.run_number }}" --format="value(tags)" | grep -q "build-${{ github.run_number }}"; then
+            echo "✅ build-${{ github.run_number }} tag exists"
+            TAG_FOUND=true
+            break
+          else
+            echo "⏳ build-${{ github.run_number }} tag not found yet..."
+
+            if [ $RETRY_COUNT -lt $((MAX_RETRIES - 1)) ]; then
+              echo "⏱️ Waiting ${RETRY_DELAY} seconds before retry..."
+              sleep $RETRY_DELAY
+            fi
+          fi
+
+          RETRY_COUNT=$((RETRY_COUNT + 1))
+        done
+
+        if [ "$TAG_FOUND" = false ]; then
+          echo "❌ build-${{ github.run_number }} tag not found after $MAX_RETRIES attempts!"
           echo "🔍 Available tags:"
           gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
-            --limit=3 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+            --limit=10 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+
+          echo "🔍 Checking if image was pushed without tags..."
+          gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+            --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+
           exit 1
         fi
 
@@ -178,6 +209,23 @@ jobs:
         echo "  - Image tag: ${{ github.run_number }}"
         echo "  - Build ID: ${{ github.run_id }}"
         echo "  - Repository: ${{ github.repository }}"
+
+        # Wait a bit more to ensure image is fully propagated
+        echo "⏱️ Waiting 30 seconds to ensure image is fully available..."
+        sleep 30
+
+        # Final verification before triggering deployment
+        echo "🔍 Final verification that build-${{ github.run_number }} tag exists..."
+        if gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+          --filter="tags:build-${{ github.run_number }}" --format="value(tags)" | grep -q "build-${{ github.run_number }}"; then
+          echo "✅ Confirmed: build-${{ github.run_number }} tag exists before triggering deployment"
+        else
+          echo "❌ Critical: build-${{ github.run_number }} tag missing before deployment trigger!"
+          echo "🔍 Available images:"
+          gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+            --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+          exit 1
+        fi
 
         # Trigger the staging deployment workflow
         gh workflow run "03 - Deploy Staging" \
