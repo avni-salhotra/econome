@@ -117,7 +117,7 @@ class ProductionSTTServiceV2:
     
     def __init__(self, 
                  credentials_path: str = "speech-credentials.json",
-                 chunk_duration: float = 0.5,
+                 chunk_duration: float = 0.1,  # 🎯 OPTIMIZED: 100ms for real-time streaming (GCP best practice)
                  sample_rate: int = 16000,
                  project_id: str = "econome-hackathon"):
         self.sample_rate = sample_rate
@@ -154,7 +154,7 @@ class ProductionSTTServiceV2:
         self._error_callback = None
         self._status_callback = None
 
-        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=latest_short, buffer_size={self.max_queue_size})")
+        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
@@ -323,7 +323,7 @@ class ProductionSTTServiceV2:
         print("🏁 Mock audio processing thread finished")
 
     def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
-        """Transcribe audio chunk using Google Speech V2 with latest_short model"""
+        """Transcribe audio chunk using Google Speech V2 with latest_long model for continuous conversations"""
         try:
             # Check if recording is still active before processing
             if not self._is_recording:
@@ -332,8 +332,22 @@ class ProductionSTTServiceV2:
 
             self._chunk_counter += 1
 
-            # DEEP DEBUG: Log chunk processing start
-            print(f"🔍 DEBUG_STT_START: chunk={self._chunk_counter}, audio_shape={audio_chunk.shape}, has_credentials={self._has_credentials}")
+            # 🔍 COMPREHENSIVE AUDIO PIPELINE VALIDATION
+            chunk_debug = {
+                "chunk_id": self._chunk_counter,
+                "timestamp": datetime.now().isoformat(),
+                "audio_shape": audio_chunk.shape,
+                "audio_dtype": str(audio_chunk.dtype),
+                "audio_min": float(np.min(audio_chunk)),
+                "audio_max": float(np.max(audio_chunk)),
+                "audio_mean": float(np.mean(audio_chunk)),
+                "audio_std": float(np.std(audio_chunk)),
+                "has_audio_signal": float(np.std(audio_chunk)) > 0.001,  # Detect if there's actual audio
+                "sample_rate": self.sample_rate,
+                "chunk_duration_ms": len(audio_chunk) / self.sample_rate * 1000,
+                "has_credentials": self._has_credentials
+            }
+            print(f"🔍 DEBUG_AUDIO_CHUNK_RECEIVED: {chunk_debug}")
 
             if not self._has_credentials:
                 # Mock mode for development
@@ -345,19 +359,21 @@ class ProductionSTTServiceV2:
             audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
 
-            # DEEP DEBUG: Log audio conversion details
-            audio_debug = {
+            # 🔍 VALIDATE AUDIO CONVERSION & QUALITY
+            conversion_debug = {
                 "chunk_id": self._chunk_counter,
-                "original_shape": audio_chunk.shape,
-                "original_dtype": str(audio_chunk.dtype),
-                "original_min": float(audio_chunk.min()),
-                "original_max": float(audio_chunk.max()),
-                "converted_bytes_length": len(audio_bytes),
+                "original_length": len(audio_chunk),
+                "int16_length": len(audio_int16),
+                "bytes_length": len(audio_bytes),
+                "expected_bytes": len(audio_chunk) * 2,  # 16-bit = 2 bytes per sample
+                "conversion_ok": len(audio_bytes) == len(audio_chunk) * 2,
+                "audio_amplitude_ok": float(np.max(np.abs(audio_int16))) > 100,  # Check if audio has reasonable amplitude
+                "zero_padding_ratio": float(np.sum(audio_int16 == 0)) / len(audio_int16),  # Check for silence
                 "sample_rate": self.sample_rate
             }
-            print(f"🔍 DEBUG_STT_AUDIO_CONVERSION: {audio_debug}")
+            print(f"🔍 DEBUG_AUDIO_CONVERSION: {conversion_debug}")
 
-            # OPTIMIZED: Create Speech V2 request with latest_short model
+            # 🎯 OPTIMIZED: Create Speech V2 request with latest_long model for continuous conversations
             request = speech_v2.RecognizeRequest(
                 recognizer=self.recognizer,
                 config=speech_v2.RecognitionConfig(
@@ -367,7 +383,7 @@ class ProductionSTTServiceV2:
                         audio_channel_count=1,
                     ),
                     language_codes=["en-US"],
-                    model="latest_short",  # OPTIMIZED: Better for real-time streaming chunks
+                    model="latest_long",  # 🎯 CRITICAL FIX: For continuous conversations (not commands)
                     features=speech_v2.RecognitionFeatures(
                         enable_automatic_punctuation=True,
                         enable_word_time_offsets=True,
@@ -380,7 +396,7 @@ class ProductionSTTServiceV2:
             # DEEP DEBUG: Log STT API call details
             stt_request_debug = {
                 "chunk_id": self._chunk_counter,
-                "model": "latest_short",
+                "model": "latest_long",
                 "recognizer": self.recognizer,
                 "audio_bytes_length": len(audio_bytes),
                 "sample_rate": self.sample_rate,

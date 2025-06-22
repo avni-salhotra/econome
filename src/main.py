@@ -62,7 +62,7 @@ async def interactive_demo():
     print("\n🏗️ Initializing system...")
     system = ConversationIntelligenceSystem(
         mock_mode=mock_mode,
-        chunk_duration=2.0,  # FIXED: Use 2-second chunks for better quality
+        chunk_duration=0.1,  # 🎯 OPTIMIZED: 100ms chunks for real-time streaming
         project_id="econome-hackathon"
     )
     
@@ -386,7 +386,7 @@ async def test_stt_directly(mock_mode: bool):
         stt = MockSTTService()
         print("🔧 Using Mock STT Service")
     else:
-        stt = ProductionSTTServiceV2(chunk_duration=2.0)  # Same as main system
+        stt = ProductionSTTServiceV2(chunk_duration=0.1)  # 🎯 OPTIMIZED: 100ms for real-time
         print("🔧 Using Production STT Service (2-second chunks)")
     
     # Set up callback
@@ -427,7 +427,7 @@ async def quick_test():
     
     # Test system initialization
     print("1. Testing system initialization...")
-    system = ConversationIntelligenceSystem(mock_mode=True, chunk_duration=2.0)
+    system = ConversationIntelligenceSystem(mock_mode=True, chunk_duration=0.1)
     
     # Test system startup
     print("2. Testing system startup...")
