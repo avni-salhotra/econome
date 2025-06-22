@@ -957,6 +957,7 @@ class ConversationIntelligenceSystem:
         self.mock_mode = mock_mode
         self.websocket_manager = websocket_manager  # Add WebSocket manager
         self.kwargs = kwargs
+        self.session_id = None  # FIXED: Add session_id storage
         print("✅ Conversation Intelligence System initialized")
 
     def _connect_agents(self):
@@ -1003,10 +1004,74 @@ class ConversationIntelligenceSystem:
         
         self.is_running = True
         
-        # Start conversation session
-        session_id = self.agents["orchestration"].start_conversation_session()
+        # Start conversation session and store it
+        self.session_id = self.agents["orchestration"].start_conversation_session()
         print("🎯 Multi-Agent System ready for conversation intelligence!")
-        return session_id
+        return self.session_id
+
+    def get_internal_state(self) -> Dict[str, Any]:
+        """
+        OBSERVABILITY: Get comprehensive internal state for debugging and monitoring
+        """
+        try:
+            import time
+            current_time = time.time()
+
+            # Get STT service state
+            stt_state = {}
+            stt_agent = self.get_agent("stt")
+            if stt_agent and hasattr(stt_agent, 'stt_service'):
+                if hasattr(stt_agent.stt_service, 'get_internal_state'):
+                    stt_state = stt_agent.stt_service.get_internal_state()
+                else:
+                    stt_state = {
+                        "error": "STT service does not have get_internal_state method",
+                        "service_available": True
+                    }
+            else:
+                stt_state = {
+                    "error": "STT agent or service not available",
+                    "service_available": False
+                }
+
+            # Get WebSocket manager state
+            websocket_state = {}
+            if self.websocket_manager:
+                websocket_state = {
+                    "total_connections": len(self.websocket_manager.connections),
+                    "active_connections": len([
+                        conn for conn in self.websocket_manager.connections.values()
+                        if conn.is_active
+                    ]),
+                    "connection_stream_ids": {
+                        conn_id: conn.connection_stream_id
+                        for conn_id, conn in self.websocket_manager.connections.items()
+                    }
+                }
+            else:
+                websocket_state = {
+                    "error": "WebSocket manager not available",
+                    "total_connections": 0
+                }
+
+            return {
+                "system_type": "ConversationIntelligenceSystem",
+                "session_id": self.session_id,
+                "is_running": self.is_running,
+                "mock_mode": self.mock_mode,
+                "agents_available": list(self.agents.keys()),
+                "agents_count": len(self.agents),
+                "stt_service_state": stt_state,
+                "websocket_manager_state": websocket_state,
+                "system_kwargs": self.kwargs,
+                "state_dump_timestamp": current_time * 1000  # milliseconds
+            }
+        except Exception as e:
+            return {
+                "error": f"Failed to get internal state: {e}",
+                "system_type": "ConversationIntelligenceSystem",
+                "state_dump_timestamp": time.time() * 1000
+            }
 
     def stop_system(self) -> Dict[str, Any]:
         """Stop the entire system"""

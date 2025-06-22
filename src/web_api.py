@@ -415,90 +415,308 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         # Decode base64 audio data
         audio_bytes = base64.b64decode(audio_data)
 
-        # Try to process audio with pydub (requires ffmpeg)
-        try:
-            from pydub import AudioSegment
+        # OBSERVABILITY: Get connection stream tracking info
+        connection = websocket_manager.connections.get(connection_id)
+        if connection:
+            connection_stream_id = connection.connection_stream_id
+            chunk_seq_number = connection.get_next_chunk_sequence()
+        else:
+            connection_stream_id = "unknown"
+            chunk_seq_number = 0
+            logger.warning(f"⚠️ Connection {connection_id} not found in websocket_manager")
 
-            # Create a temporary file-like object with proper format detection
-            audio_io = io.BytesIO(audio_bytes)
+        # STRUCTURED LOGGING: Audio pipeline entry point with observability
+        pipeline_context = {
+            "connection_id": connection_id,
+            "connection_stream_id": connection_stream_id,
+            "chunk_seq_number": chunk_seq_number,
+            "mime_type": mime_type,
+            "audio_bytes_length": len(audio_bytes),
+            "base64_length": len(audio_data),
+            "pipeline_stage": "decode",
+            "timestamp": datetime.now().isoformat()
+        }
+        logger.info(f"🎵 AUDIO_PIPELINE_START: {pipeline_context}")
 
-            # Try to detect format from mime_type and process accordingly
-            if 'webm' in mime_type.lower():
-                # WebM format - specify format explicitly for pydub
-                audio_segment = AudioSegment.from_file(audio_io, format="webm")
-            elif 'mp4' in mime_type.lower():
-                audio_segment = AudioSegment.from_file(audio_io, format="mp4")
-            elif 'wav' in mime_type.lower():
-                audio_segment = AudioSegment.from_file(audio_io, format="wav")
-            else:
-                # Try auto-detection
-                audio_segment = AudioSegment.from_file(audio_io)
-
-            # Convert to mono 16kHz (required for speech recognition)
-            audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
-
-            # Convert to numpy array (float32, normalized to [-1, 1])
-            audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
-            audio_array = audio_array / 32768.0  # Normalize from int16 to float32
-
-            logger.debug(f"📡 Processed audio chunk with pydub ({mime_type}): {len(audio_array)} samples")
-
-        except Exception as pydub_error:
-            logger.warning(f"⚠️ pydub processing failed for {mime_type}: {pydub_error}")
-
-            # Enhanced fallback: Skip raw processing for encoded formats
-            if any(fmt in mime_type.lower() for fmt in ['webm', 'mp4', 'ogg']):
-                logger.error(f"❌ Cannot process encoded format {mime_type} without pydub/ffmpeg")
-                raise Exception(f"Audio format {mime_type} requires ffmpeg for processing. Raw fallback not applicable for encoded formats.")
-
-            # Fallback only for raw/uncompressed formats
+        # FIXED: Handle WebM/Opus with direct FFmpeg subprocess for headerless chunks
+        if 'webm' in mime_type.lower() and 'opus' in mime_type.lower():
             try:
-                # Only attempt raw processing for potentially uncompressed data
-                logger.info(f"🔄 Attempting raw audio processing for {mime_type}")
+                import subprocess
 
-                # Try different raw formats
-                if len(audio_bytes) % 2 == 0:  # Could be int16
-                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                # Use FFmpeg subprocess to convert WebM/Opus directly to PCM
+                # This handles both header and headerless chunks properly
+                ffmpeg_cmd = [
+                    'ffmpeg',
+                    '-f', 'webm',           # Input format
+                    '-i', 'pipe:0',         # Input from stdin
+                    '-f', 's16le',          # Output format (PCM 16-bit little endian)
+                    '-acodec', 'pcm_s16le', # PCM codec
+                    '-ar', '16000',         # 16kHz sample rate
+                    '-ac', '1',             # Mono channel
+                    '-loglevel', 'error',   # Suppress FFmpeg logs
+                    'pipe:1'                # Output to stdout
+                ]
+
+                # OBSERVABILITY: FFmpeg timing start
+                ffmpeg_start_time = datetime.now()
+                ffmpeg_start_timestamp = ffmpeg_start_time.timestamp() * 1000  # milliseconds
+
+                # STRUCTURED LOGGING: FFmpeg processing stage
+                ffmpeg_context = {
+                    **pipeline_context,
+                    "pipeline_stage": "ffmpeg_webm_opus",
+                    "ffmpeg_cmd": " ".join(ffmpeg_cmd),
+                    "input_bytes": len(audio_bytes),
+                    "ffmpeg_start_timestamp": ffmpeg_start_timestamp
+                }
+                logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG: {ffmpeg_context}")
+
+                # Run FFmpeg process with timing
+                process = subprocess.run(
+                    ffmpeg_cmd,
+                    input=audio_bytes,
+                    capture_output=True,
+                    timeout=10  # 10 second timeout
+                )
+
+                # OBSERVABILITY: FFmpeg timing end
+                ffmpeg_end_time = datetime.now()
+                ffmpeg_end_timestamp = ffmpeg_end_time.timestamp() * 1000  # milliseconds
+                ffmpeg_latency_ms = ffmpeg_end_timestamp - ffmpeg_start_timestamp
+
+                if process.returncode == 0 and process.stdout:
+                    # Convert PCM bytes to numpy array
+                    audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                     audio_array = audio_array / 32768.0  # Normalize from int16 to float32
-                elif len(audio_bytes) % 4 == 0:  # Could be float32
-                    audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
-                    # Ensure normalized range
-                    if np.max(np.abs(audio_array)) > 1.0:
-                        audio_array = audio_array / 32768.0
+
+                    # STRUCTURED LOGGING: FFmpeg success with timing
+                    success_context = {
+                        **ffmpeg_context,
+                        "pipeline_stage": "ffmpeg_success",
+                        "output_samples": len(audio_array),
+                        "pcm_bytes": len(process.stdout),
+                        "sample_rate": 16000,
+                        "channels": 1,
+                        "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
+                        "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
+                    }
+                    logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS: {success_context}")
                 else:
-                    raise ValueError(f"Audio data length {len(audio_bytes)} not compatible with standard formats")
+                    # Log FFmpeg error for debugging
+                    ffmpeg_error = process.stderr.decode('utf-8') if process.stderr else "Unknown FFmpeg error"
 
-                logger.info(f"📡 Processed audio chunk with raw fallback: {len(audio_array)} samples")
+                    # STRUCTURED LOGGING: FFmpeg failure with timing
+                    error_context = {
+                        **ffmpeg_context,
+                        "pipeline_stage": "ffmpeg_error",
+                        "return_code": process.returncode,
+                        "stderr": ffmpeg_error,
+                        "stdout_length": len(process.stdout) if process.stdout else 0,
+                        "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
+                        "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
+                    }
+                    logger.error(f"❌ AUDIO_PIPELINE_FFMPEG_ERROR: {error_context}")
+                    raise Exception(f"FFmpeg WebM processing failed: {ffmpeg_error}")
 
-            except Exception as fallback_error:
-                logger.error(f"❌ Both pydub and fallback audio processing failed: {fallback_error}")
-                raise Exception(f"Audio processing failed for {mime_type}. Ensure ffmpeg is properly installed and configured.")
+            except subprocess.TimeoutExpired:
+                logger.error("❌ FFmpeg process timed out")
+                raise Exception("FFmpeg process timed out during WebM processing")
+            except Exception as ffmpeg_error:
+                logger.error(f"❌ FFmpeg WebM processing error: {ffmpeg_error}")
+                raise Exception(f"FFmpeg WebM processing failed: {str(ffmpeg_error)}")
 
-        # Get the STT agent and process the audio chunk using proper interface
+        else:
+            # Use pydub for other formats (MP4, WAV, etc.)
+            try:
+                from pydub import AudioSegment
+
+                # Create a temporary file-like object
+                audio_io = io.BytesIO(audio_bytes)
+
+                # Process based on mime type
+                if 'mp4' in mime_type.lower():
+                    audio_segment = AudioSegment.from_file(audio_io, format="mp4")
+                elif 'wav' in mime_type.lower():
+                    audio_segment = AudioSegment.from_file(audio_io, format="wav")
+                else:
+                    # Try auto-detection for other formats
+                    audio_segment = AudioSegment.from_file(audio_io)
+
+                # Convert to mono 16kHz (required for speech recognition)
+                audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+
+                # Convert to numpy array (float32, normalized to [-1, 1])
+                audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+                audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+
+                logger.debug(f"✅ pydub processing successful ({mime_type}): {len(audio_array)} samples")
+
+            except Exception as pydub_error:
+                logger.error(f"❌ pydub processing failed for {mime_type}: {pydub_error}")
+
+                # FIXED: No unsafe raw fallback for encoded formats
+                # Raw fallback is only safe for truly uncompressed PCM data
+                if any(fmt in mime_type.lower() for fmt in ['webm', 'mp4', 'ogg', 'aac', 'm4a']):
+                    logger.error(f"❌ Encoded format {mime_type} requires proper codec support - no raw fallback")
+                    raise Exception(f"Audio format {mime_type} requires FFmpeg/pydub codec support. Raw processing would corrupt data.")
+
+                # SAFE: Only attempt raw processing for explicitly uncompressed formats
+                if mime_type.lower() in ['audio/pcm', 'audio/raw', 'audio/l16']:
+                    try:
+                        logger.info(f"🔄 Attempting raw PCM processing for {mime_type}")
+
+                        # Only try int16 PCM (most common uncompressed format)
+                        if len(audio_bytes) % 2 == 0:
+                            audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                            audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+                            logger.debug(f"✅ Raw PCM processing successful ({mime_type}): {len(audio_array)} samples")
+                        else:
+                            raise ValueError(f"PCM data length {len(audio_bytes)} not compatible with int16 format")
+
+                    except Exception as raw_error:
+                        logger.error(f"❌ Raw PCM processing failed: {raw_error}")
+                        raise Exception(f"Raw PCM processing failed for {mime_type}: {str(raw_error)}")
+                else:
+                    # Unknown format - fail safely
+                    logger.error(f"❌ Unknown audio format {mime_type} - cannot process safely")
+                    raise Exception(f"Unsupported audio format {mime_type}. Supported: WebM/Opus (via FFmpeg), MP4, WAV, PCM.")
+
+        # FIXED: Enhanced STT queue processing with lifecycle checks
         stt_agent = conversation_system.get_agent("stt")
         if stt_agent and hasattr(stt_agent, 'stt_service'):
-            # Use proper interface for queuing audio chunks
             stt_service = stt_agent.stt_service
+
+            # LIFECYCLE CHECK 1: Verify STT service is recording
+            if hasattr(stt_service, '_is_recording') and not stt_service._is_recording:
+                logger.warning("⚠️ STT service is not recording - chunk will be ignored")
+                return
+
+            # LIFECYCLE CHECK 2: Verify processing thread is active
+            processing_thread_active = (
+                hasattr(stt_service, '_processing_thread') and
+                stt_service._processing_thread is not None and
+                stt_service._processing_thread.is_alive()
+            )
+
+            if not processing_thread_active:
+                logger.error("❌ STT processing thread is not active - chunks will not be processed")
+                # Try to restart the processing thread if possible
+                if hasattr(stt_service, '_start_processing_thread'):
+                    try:
+                        stt_service._start_processing_thread()
+                        logger.info("🔄 Attempted to restart STT processing thread")
+                    except Exception as restart_error:
+                        logger.error(f"❌ Failed to restart processing thread: {restart_error}")
+                        return
+                else:
+                    return
+
+            # LIFECYCLE CHECK 3: Verify queue is not full
+            if hasattr(stt_service, '_audio_queue'):
+                queue_size = stt_service._audio_queue.qsize()
+                max_size = getattr(stt_service, 'max_queue_size', 100)
+                if queue_size >= max_size * 0.9:  # 90% full threshold
+                    logger.warning(f"⚠️ STT queue nearly full: {queue_size}/{max_size}")
+
+            # OBSERVABILITY: Queue timing start
+            queue_enqueue_time = datetime.now()
+            queue_enqueue_timestamp = queue_enqueue_time.timestamp() * 1000  # milliseconds
+
+            # STRUCTURED LOGGING: STT queue stage with timing
+            queue_context = {
+                **pipeline_context,
+                "pipeline_stage": "stt_queue",
+                "audio_samples": len(audio_array),
+                "queue_size": stt_service._audio_queue.qsize() if hasattr(stt_service, '_audio_queue') else "unknown",
+                "is_recording": getattr(stt_service, '_is_recording', False),
+                "processing_thread_alive": processing_thread_active,
+                "queue_enqueue_timestamp": queue_enqueue_timestamp
+            }
+            logger.info(f"📡 AUDIO_PIPELINE_STT_QUEUE: {queue_context}")
+
+            # Use proper interface for queuing audio chunks
             if hasattr(stt_service, 'queue_audio_chunk'):
                 success = stt_service.queue_audio_chunk(audio_array)
                 if success:
-                    logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
+                    # STRUCTURED LOGGING: Queue success
+                    success_context = {
+                        **queue_context,
+                        "pipeline_stage": "stt_queue_success",
+                        "queue_method": "interface"
+                    }
+                    logger.info(f"✅ AUDIO_PIPELINE_STT_QUEUE_SUCCESS: {success_context}")
+
+                    # OBSERVABILITY: Record successful chunk processing
+                    if connection:
+                        connection.record_chunk_processed(success=True)
                 else:
-                    logger.warning("⚠️ Failed to queue audio chunk - service may not be recording")
+                    # STRUCTURED LOGGING: Queue failure
+                    failure_context = {
+                        **queue_context,
+                        "pipeline_stage": "stt_queue_failure",
+                        "queue_method": "interface",
+                        "reason": "service_not_recording"
+                    }
+                    logger.warning(f"⚠️ AUDIO_PIPELINE_STT_QUEUE_FAILURE: {failure_context}")
+
+                    # OBSERVABILITY: Record failed chunk processing
+                    if connection:
+                        connection.record_chunk_processed(success=False)
             else:
                 # Fallback to direct access if interface not available
                 if hasattr(stt_service, '_audio_queue'):
-                    stt_service._audio_queue.put(audio_array)
-                    logger.debug(f"📡 Audio chunk queued (fallback method): {len(audio_array)} samples")
+                    try:
+                        stt_service._audio_queue.put(audio_array, block=False)
+                        # STRUCTURED LOGGING: Fallback queue success
+                        fallback_context = {
+                            **queue_context,
+                            "pipeline_stage": "stt_queue_success",
+                            "queue_method": "fallback_direct"
+                        }
+                        logger.info(f"✅ AUDIO_PIPELINE_STT_QUEUE_SUCCESS: {fallback_context}")
+                    except Exception as queue_error:
+                        # STRUCTURED LOGGING: Fallback queue failure
+                        fallback_error_context = {
+                            **queue_context,
+                            "pipeline_stage": "stt_queue_failure",
+                            "queue_method": "fallback_direct",
+                            "error": str(queue_error)
+                        }
+                        logger.error(f"❌ AUDIO_PIPELINE_STT_QUEUE_FAILURE: {fallback_error_context}")
                 else:
-                    logger.error("❌ No audio queue interface available")
+                    # STRUCTURED LOGGING: No queue interface
+                    no_interface_context = {
+                        **queue_context,
+                        "pipeline_stage": "stt_queue_failure",
+                        "reason": "no_queue_interface"
+                    }
+                    logger.error(f"❌ AUDIO_PIPELINE_STT_QUEUE_FAILURE: {no_interface_context}")
         else:
-            logger.warning("⚠️ STT agent or STT service not available for frontend audio processing")
+            logger.error("❌ STT agent or service not available")
             if stt_agent:
                 logger.debug(f"🔍 STT agent available: {stt_agent is not None}")
                 logger.debug(f"🔍 STT service available: {hasattr(stt_agent, 'stt_service')}")
                 if hasattr(stt_agent, 'stt_service'):
                     logger.debug(f"🔍 Queue interface available: {hasattr(stt_agent.stt_service, 'queue_audio_chunk')}")
+
+            # OBSERVABILITY: Record failed chunk processing
+            if connection:
+                connection.record_chunk_processed(success=False)
+
+        # OBSERVABILITY: Check for unprocessed chunk alerts
+        if connection:
+            unprocessed_count = connection.get_unprocessed_chunk_count(60)  # 60 second window
+            if unprocessed_count >= 5:  # Alert threshold
+                alert_context = {
+                    **pipeline_context,
+                    "pipeline_stage": "unprocessed_chunk_alert",
+                    "unprocessed_chunks_60s": unprocessed_count,
+                    "total_chunks_processed": connection.total_chunks_processed,
+                    "total_chunks_dropped": connection.total_chunks_dropped,
+                    "alert_threshold": 5,
+                    "window_seconds": 60
+                }
+                logger.error(f"🚨 UNPROCESSED_CHUNK_ALERT: {alert_context}")
 
     except Exception as e:
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
@@ -700,6 +918,52 @@ async def serve_frontend():
             </body>
         </html>
         """)
+
+async def periodic_state_dump():
+    """
+    OBSERVABILITY: Periodic internal state dump for system health monitoring
+    Logs comprehensive system state every 60 seconds at DEBUG level
+    """
+    while True:
+        try:
+            await asyncio.sleep(60)  # 60 second interval
+
+            # Get all active conversation systems
+            active_systems = []
+            for connection_id, connection in websocket_manager.connections.items():
+                if hasattr(connection, 'conversation_session_id') and connection.conversation_session_id:
+                    system_state = {
+                        "connection_id": connection_id,
+                        "connection_stream_id": connection.connection_stream_id,
+                        "session_id": connection.conversation_session_id,
+                        "connection_info": connection.get_connection_info()
+                    }
+                    active_systems.append(system_state)
+
+            # STRUCTURED LOGGING: Periodic state dump
+            state_dump_context = {
+                "pipeline_stage": "periodic_state_dump",
+                "dump_timestamp": datetime.now().timestamp() * 1000,
+                "active_connections": len(websocket_manager.connections),
+                "active_systems": len(active_systems),
+                "websocket_manager_state": {
+                    "total_connections": len(websocket_manager.connections),
+                    "connection_details": active_systems
+                }
+            }
+
+            # Log at DEBUG level for passive monitoring
+            logger.debug(f"🔍 PERIODIC_STATE_DUMP: {state_dump_context}")
+
+        except Exception as e:
+            logger.error(f"❌ Error in periodic state dump: {e}")
+
+# Start periodic state dump task
+@app.on_event("startup")
+async def startup_event():
+    """Start background tasks on application startup"""
+    asyncio.create_task(periodic_state_dump())
+    logger.info("🚀 Periodic state dump task started (60s interval)")
 
 if __name__ == "__main__":
     # Run the server
