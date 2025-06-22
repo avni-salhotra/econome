@@ -115,26 +115,37 @@ class ProductionSTTServiceV2:
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
         try:
-            if os.path.exists(credentials_path):
-                self.credentials = service_account.Credentials.from_service_account_file(
-                    credentials_path
-                )
-                
+            # Try multiple credential paths (for Cloud Run and local development)
+            credential_paths = [
+                credentials_path,  # Default path (local development)
+                "/app/secrets/speech-credentials.json",  # New Cloud Run path
+                "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
+            ]
+
+            credentials_found = False
+            for path in credential_paths:
+                if os.path.exists(path):
+                    self.credentials = service_account.Credentials.from_service_account_file(path)
+                    credentials_found = True
+                    print(f"✅ Speech credentials loaded from {path}")
+                    break
+
+            if credentials_found:
                 # OPTIMIZED: Use regional endpoint for better performance
                 from google.api_core.client_options import ClientOptions
                 client_options = ClientOptions(
                     api_endpoint="us-central1-speech.googleapis.com"
                 )
-                
+
                 self.speech_client = speech_v2.SpeechClient(
                     credentials=self.credentials,
                     client_options=client_options
                 )
                 self._has_credentials = True
-                
+
                 # OPTIMIZED: Use regional recognizer for better performance
                 self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
-                
+
                 print("✅ Google Cloud Speech V2 client initialized (us-central1 region)")
             else:
                 print("⚠️ No credentials found - running in mock mode")

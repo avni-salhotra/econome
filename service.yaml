@@ -29,17 +29,19 @@ spec:
         - name: GOOGLE_CLOUD_PROJECT
           value: "PROJECT_ID"
         - name: GOOGLE_APPLICATION_CREDENTIALS
-          value: "/secrets/speech-credentials.json"
+          value: "/app/secrets/speech-credentials.json"
         resources:
           limits:
             cpu: "2"
             memory: "2Gi"
         volumeMounts:
         - name: speech-credentials
-          mountPath: /secrets
+          mountPath: /app/secrets/speech-credentials.json
+          subPath: speech-credentials.json
           readOnly: true
         - name: gemini-credentials
-          mountPath: /secrets
+          mountPath: /app/secrets/gemini-credentials.json
+          subPath: gemini-credentials.json
           readOnly: true
       volumes:
       - name: speech-credentials

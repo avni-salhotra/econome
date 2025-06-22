@@ -19,28 +19,35 @@ GENERATION_PARAMS = {
 def _initialize_gemini(credentials_path: str = "gemini-credentials.json"):
     """Initialize Gemini with proper error handling and service account credentials"""
     try:
-        # First try service account credentials
-        if os.path.exists(credentials_path):
-            credentials = service_account.Credentials.from_service_account_file(credentials_path)
-            genai.configure(credentials=credentials)
-            print("✅ Gemini initialized with service account credentials")
-            return genai.GenerativeModel(GENERATION_MODEL)
+        # Try multiple credential paths (for Cloud Run and local development)
+        credential_paths = [
+            credentials_path,  # Default path (local development)
+            "/app/secrets/gemini-credentials.json",  # New Cloud Run path
+            "/secrets/gemini-credentials.json",  # Legacy Cloud Run path (backward compatibility)
+        ]
+
+        for path in credential_paths:
+            if os.path.exists(path):
+                credentials = service_account.Credentials.from_service_account_file(path)
+                genai.configure(credentials=credentials)
+                print(f"✅ Gemini initialized with service account credentials from {path}")
+                return genai.GenerativeModel(GENERATION_MODEL)
 
         # Fallback to API key if available
-        elif os.getenv("GOOGLE_API_KEY"):
+        if os.getenv("GOOGLE_API_KEY"):
             genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
             print("✅ Gemini initialized with API key")
             return genai.GenerativeModel(GENERATION_MODEL)
 
         # Fallback to default credentials
-        elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             genai.configure()
             print("✅ Gemini initialized with application default credentials")
             return genai.GenerativeModel(GENERATION_MODEL)
 
-        else:
-            print("⚠️ No Gemini credentials found - running in mock mode")
-            return None
+        # No credentials found
+        print("⚠️ No Gemini credentials found - running in mock mode")
+        return None
 
     except Exception as e:
         print(f"⚠️ Gemini initialization failed: {e}")

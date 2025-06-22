@@ -38,7 +38,7 @@ RUN rm -f *.json || true
 ENV PORT=8080
 ENV PYTHONPATH=/app
 ENV PYTHONUNBUFFERED=1
-ENV GOOGLE_APPLICATION_CREDENTIALS=/secrets/speech-credentials.json
+ENV GOOGLE_APPLICATION_CREDENTIALS=/app/secrets/speech-credentials.json
 
 # Switch to non-root user
 USER appuser
