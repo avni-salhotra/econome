@@ -269,6 +269,10 @@ async def conversation_websocket(websocket: WebSocket):
         conversation_system = ConversationIntelligenceSystem()
         active_conversations[connection_id] = conversation_system
         
+        # 🚨 CRITICAL FIX: Start the conversation system to build agents
+        await conversation_system.start_system()
+        logger.info(f"🚀 Conversation system started for {connection_id}")
+        
         # Set up transcript callback for real-time updates
         def transcript_callback(segment):
             """Forward transcript segments to WebSocket client"""
