@@ -202,6 +202,15 @@ jobs:
     - name: "📥 Checkout code"
       uses: actions/checkout@v4
 
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
     - name: "🚀 Trigger staging deployment"
       run: |
         echo "🚀 Triggering staging deployment..."
@@ -210,24 +219,12 @@ jobs:
         echo "  - Build ID: ${{ github.run_id }}"
         echo "  - Repository: ${{ github.repository }}"
 
-        # Wait a bit more to ensure image is fully propagated
-        echo "⏱️ Waiting 30 seconds to ensure image is fully available..."
-        sleep 30
-
-        # Final verification before triggering deployment
-        echo "🔍 Final verification that build-${{ github.run_number }} tag exists..."
-        if gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
-          --filter="tags:build-${{ github.run_number }}" --format="value(tags)" | grep -q "build-${{ github.run_number }}"; then
-          echo "✅ Confirmed: build-${{ github.run_number }} tag exists before triggering deployment"
-        else
-          echo "❌ Critical: build-${{ github.run_number }} tag missing before deployment trigger!"
-          echo "🔍 Available images:"
-          gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
-            --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
-          exit 1
-        fi
+        # Brief wait to ensure build job completion is fully processed
+        echo "⏱️ Waiting 10 seconds to ensure build completion is processed..."
+        sleep 10
 
         # Trigger the staging deployment workflow
+        # Note: Image verification will be handled by the staging deployment workflow
         gh workflow run "03 - Deploy Staging" \
           --field image-tag="${{ github.run_number }}" \
           --field build-id="${{ github.run_id }}" \
