@@ -34,20 +34,20 @@ def _initialize_gemini(credentials_path: str = "gemini-credentials.json"):
                 return genai.GenerativeModel(GENERATION_MODEL)
 
         # Fallback to API key if available
-        elif os.getenv("GOOGLE_API_KEY"):
+        if os.getenv("GOOGLE_API_KEY"):
             genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
             print("✅ Gemini initialized with API key")
             return genai.GenerativeModel(GENERATION_MODEL)
 
         # Fallback to default credentials
-        elif os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
             genai.configure()
             print("✅ Gemini initialized with application default credentials")
             return genai.GenerativeModel(GENERATION_MODEL)
 
-        else:
-            print("⚠️ No Gemini credentials found - running in mock mode")
-            return None
+        # No credentials found
+        print("⚠️ No Gemini credentials found - running in mock mode")
+        return None
 
     except Exception as e:
         print(f"⚠️ Gemini initialization failed: {e}")
