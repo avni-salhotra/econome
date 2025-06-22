@@ -438,24 +438,10 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         }
         logger.info(f"🎵 AUDIO_PIPELINE_START: {pipeline_context}")
 
-        # FIXED: Handle WebM/Opus with direct FFmpeg subprocess for headerless chunks
+        # FIXED: Handle WebM/Opus with robust multi-strategy approach for headerless chunks
         if 'webm' in mime_type.lower() and 'opus' in mime_type.lower():
             try:
                 import subprocess
-
-                # Use FFmpeg subprocess to convert WebM/Opus directly to PCM
-                # This handles both header and headerless chunks properly
-                ffmpeg_cmd = [
-                    'ffmpeg',
-                    '-f', 'webm',           # Input format
-                    '-i', 'pipe:0',         # Input from stdin
-                    '-f', 's16le',          # Output format (PCM 16-bit little endian)
-                    '-acodec', 'pcm_s16le', # PCM codec
-                    '-ar', '16000',         # 16kHz sample rate
-                    '-ac', '1',             # Mono channel
-                    '-loglevel', 'error',   # Suppress FFmpeg logs
-                    'pipe:1'                # Output to stdout
-                ]
 
                 # OBSERVABILITY: FFmpeg timing start
                 ffmpeg_start_time = datetime.now()
@@ -465,18 +451,33 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 ffmpeg_context = {
                     **pipeline_context,
                     "pipeline_stage": "ffmpeg_webm_opus",
-                    "ffmpeg_cmd": " ".join(ffmpeg_cmd),
                     "input_bytes": len(audio_bytes),
                     "ffmpeg_start_timestamp": ffmpeg_start_timestamp
                 }
                 logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG: {ffmpeg_context}")
 
-                # Run FFmpeg process with timing
+                # STRATEGY 1: Try headerless WebM parsing with lenient matroska demuxer
+                ffmpeg_cmd_headerless = [
+                    'ffmpeg',
+                    '-f', 'matroska',       # More lenient than 'webm' for headerless chunks
+                    '-fflags', '+ignidx',   # Ignore index corruption
+                    '-analyzeduration', '0', # Don't wait for complete headers
+                    '-probesize', '32',     # Minimal probing for faster processing
+                    '-i', 'pipe:0',         # Input from stdin
+                    '-f', 's16le',          # Output format (PCM 16-bit little endian)
+                    '-acodec', 'pcm_s16le', # PCM codec
+                    '-ar', '16000',         # 16kHz sample rate
+                    '-ac', '1',             # Mono channel
+                    '-loglevel', 'error',   # Suppress FFmpeg logs
+                    'pipe:1'                # Output to stdout
+                ]
+
+                # Try headerless parsing first
                 process = subprocess.run(
-                    ffmpeg_cmd,
+                    ffmpeg_cmd_headerless,
                     input=audio_bytes,
                     capture_output=True,
-                    timeout=10  # 10 second timeout
+                    timeout=10
                 )
 
                 # OBSERVABILITY: FFmpeg timing end
@@ -484,15 +485,49 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 ffmpeg_end_timestamp = ffmpeg_end_time.timestamp() * 1000  # milliseconds
                 ffmpeg_latency_ms = ffmpeg_end_timestamp - ffmpeg_start_timestamp
 
+                success = False
                 if process.returncode == 0 and process.stdout:
-                    # Convert PCM bytes to numpy array
+                    # Strategy 1 succeeded
                     audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                     audio_array = audio_array / 32768.0  # Normalize from int16 to float32
-
-                    # STRUCTURED LOGGING: FFmpeg success with timing
+                    success = True
+                    strategy_used = "headerless_matroska"
+                else:
+                    # STRATEGY 2: Fallback to direct Opus decoding
+                    logger.warning("⚠️ Headerless WebM parsing failed, trying direct Opus decoding")
+                    
+                    ffmpeg_cmd_opus = [
+                        'ffmpeg',
+                        '-f', 'opus',           # Try direct Opus decoding
+                        '-i', 'pipe:0',
+                        '-f', 's16le',
+                        '-acodec', 'pcm_s16le',
+                        '-ar', '16000',
+                        '-ac', '1',
+                        '-loglevel', 'error',
+                        'pipe:1'
+                    ]
+                    
+                    process = subprocess.run(
+                        ffmpeg_cmd_opus,
+                        input=audio_bytes,
+                        capture_output=True,
+                        timeout=10
+                    )
+                    
+                    if process.returncode == 0 and process.stdout:
+                        # Strategy 2 succeeded
+                        audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
+                        audio_array = audio_array / 32768.0
+                        success = True
+                        strategy_used = "direct_opus"
+                
+                if success:
+                    # STRUCTURED LOGGING: FFmpeg success with timing and strategy
                     success_context = {
                         **ffmpeg_context,
                         "pipeline_stage": "ffmpeg_success",
+                        "strategy_used": strategy_used,
                         "output_samples": len(audio_array),
                         "pcm_bytes": len(process.stdout),
                         "sample_rate": 16000,
@@ -502,13 +537,14 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     }
                     logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS: {success_context}")
                 else:
-                    # Log FFmpeg error for debugging
+                    # Both strategies failed - log detailed error
                     ffmpeg_error = process.stderr.decode('utf-8') if process.stderr else "Unknown FFmpeg error"
-
+                    
                     # STRUCTURED LOGGING: FFmpeg failure with timing
                     error_context = {
                         **ffmpeg_context,
                         "pipeline_stage": "ffmpeg_error",
+                        "strategies_attempted": ["headerless_matroska", "direct_opus"],
                         "return_code": process.returncode,
                         "stderr": ffmpeg_error,
                         "stdout_length": len(process.stdout) if process.stdout else 0,
@@ -516,7 +552,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
                     logger.error(f"❌ AUDIO_PIPELINE_FFMPEG_ERROR: {error_context}")
-                    raise Exception(f"FFmpeg WebM processing failed: {ffmpeg_error}")
+                    raise Exception(f"FFmpeg WebM processing failed (both strategies): {ffmpeg_error}")
 
             except subprocess.TimeoutExpired:
                 logger.error("❌ FFmpeg process timed out")
@@ -600,15 +636,26 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
 
             if not processing_thread_active:
                 logger.error("❌ STT processing thread is not active - chunks will not be processed")
-                # Try to restart the processing thread if possible
-                if hasattr(stt_service, '_start_processing_thread'):
-                    try:
-                        stt_service._start_processing_thread()
-                        logger.info("🔄 Attempted to restart STT processing thread")
-                    except Exception as restart_error:
-                        logger.error(f"❌ Failed to restart processing thread: {restart_error}")
+                # FIXED: Enhanced thread restart logic with proper synchronization
+                logger.info("🔄 Attempting to reinitialize STT frontend streaming...")
+                try:
+                    reinit_result = stt_service.initialize_frontend_streaming()
+                    if reinit_result.get("success"):
+                        logger.info("✅ STT frontend streaming reinitialized successfully")
+                        # Verify thread is now active
+                        processing_thread_active = (
+                            hasattr(stt_service, '_processing_thread') and
+                            stt_service._processing_thread is not None and
+                            stt_service._processing_thread.is_alive()
+                        )
+                        if not processing_thread_active:
+                            logger.error("❌ Thread still not active after reinitialization")
+                            return
+                    else:
+                        logger.error(f"❌ Failed to reinitialize STT: {reinit_result.get('message')}")
                         return
-                else:
+                except Exception as restart_error:
+                    logger.error(f"❌ Failed to restart processing thread: {restart_error}")
                     return
 
             # LIFECYCLE CHECK 3: Verify queue is not full

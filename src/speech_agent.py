@@ -646,7 +646,6 @@ class ProductionSTTServiceV2:
             # Start processing thread if not already running (with proper synchronization)
             if self._processing_thread is None or not self._processing_thread.is_alive():
                 import threading
-                import time
 
                 self._processing_thread = threading.Thread(
                     target=self._process_audio_chunks,
