@@ -317,8 +317,12 @@ jobs:
 
             try:
                 ssl_context = ssl.create_default_context()
-                # Add timeout for connection
-                async with websockets.connect(uri, ssl=ssl_context, timeout=10) as websocket:
+                # Connect to WebSocket with timeout using asyncio.wait_for
+                connection = await asyncio.wait_for(
+                    websockets.connect(uri, ssl=ssl_context),
+                    timeout=10.0
+                )
+                async with connection as websocket:
                     print('✅ WebSocket connection successful')
 
                     # Send a test message

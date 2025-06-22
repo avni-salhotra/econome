@@ -94,6 +94,64 @@ async def health_check():
         "active_conversations": len(active_conversations)
     }
 
+@app.get("/debug/audio")
+async def debug_audio_status():
+    """Debug endpoint to check audio system status"""
+    try:
+        from src.speech_agent import AUDIO_AVAILABLE, CLOUD_RUN_MODE
+        import os
+
+        # Try to import sounddevice and check devices
+        audio_info = {
+            "audio_available": AUDIO_AVAILABLE,
+            "cloud_run_mode": CLOUD_RUN_MODE,
+            "environment": {
+                "K_SERVICE": os.getenv('K_SERVICE'),
+                "K_REVISION": os.getenv('K_REVISION'),
+                "K_CONFIGURATION": os.getenv('K_CONFIGURATION'),
+                "PORT": os.getenv('PORT'),
+                "GOOGLE_CLOUD_PROJECT": os.getenv('GOOGLE_CLOUD_PROJECT')
+            }
+        }
+
+        # Try to query audio devices if sounddevice is available
+        try:
+            import sounddevice as sd
+            devices = sd.query_devices()
+            audio_info["sounddevice_available"] = True
+            audio_info["device_count"] = len(devices)
+            audio_info["devices"] = [
+                {
+                    "name": device["name"],
+                    "max_input_channels": device["max_input_channels"],
+                    "max_output_channels": device["max_output_channels"],
+                    "default_samplerate": device["default_samplerate"]
+                }
+                for device in devices
+            ]
+
+            # Try to get default input device
+            try:
+                default_input = sd.query_devices(kind='input')
+                audio_info["default_input_device"] = {
+                    "name": default_input["name"],
+                    "channels": default_input["max_input_channels"]
+                }
+            except Exception as e:
+                audio_info["default_input_error"] = str(e)
+
+        except Exception as e:
+            audio_info["sounddevice_available"] = False
+            audio_info["sounddevice_error"] = str(e)
+
+        return audio_info
+
+    except Exception as e:
+        return {
+            "error": f"Debug check failed: {e}",
+            "timestamp": datetime.now().isoformat()
+        }
+
 # API endpoints
 @app.get("/api/status")
 async def get_system_status():
