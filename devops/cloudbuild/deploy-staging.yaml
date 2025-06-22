@@ -53,8 +53,7 @@ steps:
       - '--max-instances=3'
       - '--min-instances=0'
       - '--set-env-vars=GOOGLE_CLOUD_PROJECT=$PROJECT_ID,PORT=8080,ENVIRONMENT=${_ENVIRONMENT}'
-      - '--set-secrets=/secrets/speech-credentials.json=speech-credentials:latest'
-      - '--set-secrets=/secrets/gemini-credentials.json=gemini-credentials:latest'
+      - '--set-secrets=/secrets/speech-credentials.json=speech-credentials:latest,/secrets/gemini-credentials.json=gemini-credentials:latest'
       - '--tag=build-$BUILD_ID'
 
   # ===================================
