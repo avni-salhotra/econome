@@ -62,6 +62,42 @@ jobs:
         flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
         flake8 . --count --exit-zero --max-complexity=10 --max-line-length=127 --statistics
 
+  # PR Build Validation: Build-only check for PRs (no push to registry)
+  build-validation:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    if: github.event_name == 'pull_request'
+    env:
+      PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+      SERVICE_NAME: econome
+      REGION: us-central1
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build Docker image (validation only)
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: devops/Dockerfile
+        push: false
+        tags: |
+          gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-${{ github.event.number }}
+          gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-validation
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+    - name: Build validation summary
+      run: |
+        echo "✅ Docker build validation passed"
+        echo "🔍 Image would be tagged as: gcr.io/${{ secrets.GCP_PROJECT_ID }}/econome:pr-${{ github.event.number }}"
+        echo "📦 Build completed successfully - ready for merge"
+
   # CI-only job: Build and push image to registry (NO DEPLOYMENT)
   build:
     needs: test
