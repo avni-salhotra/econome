@@ -957,6 +957,7 @@ class ConversationIntelligenceSystem:
         self.mock_mode = mock_mode
         self.websocket_manager = websocket_manager  # Add WebSocket manager
         self.kwargs = kwargs
+        self.session_id = None  # FIXED: Add session_id storage
         print("✅ Conversation Intelligence System initialized")
 
     def _connect_agents(self):
@@ -1003,10 +1004,10 @@ class ConversationIntelligenceSystem:
         
         self.is_running = True
         
-        # Start conversation session
-        session_id = self.agents["orchestration"].start_conversation_session()
+        # Start conversation session and store it
+        self.session_id = self.agents["orchestration"].start_conversation_session()
         print("🎯 Multi-Agent System ready for conversation intelligence!")
-        return session_id
+        return self.session_id
 
     def stop_system(self) -> Dict[str, Any]:
         """Stop the entire system"""

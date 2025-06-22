@@ -63,9 +63,34 @@ class GCPEphemeralSessionManager:
         
         if self.use_firestore:
             try:
-                self.db = firestore.Client(project=project_id)
-                self.collection = self.db.collection('ephemeral_sessions')
-                print("✅ Firestore initialized for ephemeral sessions")
+                # FIXED: Use explicit credential paths like other services
+                import os
+                from google.oauth2 import service_account
+
+                # Try multiple credential paths (for Cloud Run and local development)
+                credential_paths = [
+                    "/app/secrets/speech/credentials.json",  # New Cloud Run path (separate directories)
+                    "/app/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
+                    "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
+                    "speech-credentials.json",  # Default path (local development)
+                ]
+
+                credentials_found = False
+                for path in credential_paths:
+                    if os.path.exists(path):
+                        credentials = service_account.Credentials.from_service_account_file(path)
+                        self.db = firestore.Client(project=project_id, credentials=credentials)
+                        self.collection = self.db.collection('ephemeral_sessions')
+                        credentials_found = True
+                        print(f"✅ Firestore initialized with credentials from {path}")
+                        break
+
+                if not credentials_found:
+                    # Fallback to default credentials (for local development with gcloud auth)
+                    self.db = firestore.Client(project=project_id)
+                    self.collection = self.db.collection('ephemeral_sessions')
+                    print("✅ Firestore initialized with default credentials")
+
             except Exception as e:
                 print(f"⚠️ Firestore initialization failed: {e}")
                 self.use_firestore = False
