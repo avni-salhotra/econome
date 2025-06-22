@@ -515,22 +515,12 @@ Would you like to try Demo Mode instead?`;
                     }
                 };
 
-                // Test microphone access first
-                const testStream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('✅ Safari microphone test successful');
+                // Get microphone stream for Safari
+                this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
+                console.log('✅ Safari microphone stream obtained');
 
-                // Stop test stream immediately
-                testStream.getTracks().forEach(track => track.stop());
-
-                // For Safari, use backend microphone mode (simpler and more reliable)
-                console.log('🔄 Using backend microphone mode for Safari');
-
-                this.ws.send(JSON.stringify({
-                    action: 'start_recording',
-                    browser: 'safari',
-                    mode: 'backend',
-                    streaming: false
-                }));
+                // Start real-time audio streaming for Safari too
+                await this.startAudioStreaming();
 
                 // Update UI to recording state
                 this.isRecording = true;
@@ -538,7 +528,7 @@ Would you like to try Demo Mode instead?`;
                 this.startBtn.disabled = true;
                 this.stopBtn.disabled = false;
                 this.liveTranscript = '';
-                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">🧭 Safari mode: Listening via backend... speak clearly and naturally</div>';
+                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">🧭 Safari: Listening to your microphone... speak clearly and naturally</div>';
                 this.resultsContainer.classList.add('hidden');
             }
 
@@ -550,12 +540,14 @@ Would you like to try Demo Mode instead?`;
                     throw new Error('Microphone access not supported in this browser');
                 }
 
-                // Standard browser constraints
+                // Standard browser constraints optimized for speech recognition
                 const constraints = {
                     audio: {
                         echoCancellation: true,
                         noiseSuppression: true,
-                        autoGainControl: true
+                        autoGainControl: true,
+                        sampleRate: 16000,  // Optimal for speech recognition
+                        channelCount: 1     // Mono audio
                     }
                 };
 
@@ -570,16 +562,8 @@ Would you like to try Demo Mode instead?`;
                     audioTracks: this.audioStream.getAudioTracks().length
                 });
 
-                // For non-Safari browsers, also use backend mode for simplicity
-                // This ensures consistent behavior across browsers
-                this.audioStream.getTracks().forEach(track => track.stop());
-
-                this.ws.send(JSON.stringify({
-                    action: 'start_recording',
-                    browser: 'standard',
-                    mode: 'backend',
-                    streaming: false
-                }));
+                // Start real-time audio streaming to backend
+                await this.startAudioStreaming();
 
                 // Update UI to recording state
                 this.isRecording = true;
@@ -587,18 +571,68 @@ Would you like to try Demo Mode instead?`;
                 this.startBtn.disabled = true;
                 this.stopBtn.disabled = false;
                 this.liveTranscript = '';
-                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">Listening... speak clearly and naturally</div>';
+                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">🎤 Listening to your microphone... speak clearly and naturally</div>';
                 this.resultsContainer.classList.add('hidden');
             }
 
+            async startAudioStreaming() {
+                console.log('🎵 Starting real-time audio streaming...');
+
+                // Notify backend that we're starting frontend audio streaming
+                this.ws.send(JSON.stringify({
+                    action: 'start_recording',
+                    browser: 'standard',
+                    mode: 'frontend_streaming',
+                    streaming: true,
+                    sample_rate: 16000,
+                    channels: 1
+                }));
+
+                // Set up MediaRecorder for real-time audio streaming
+                const mimeType = this.getSupportedMimeType();
+                console.log('🎤 Using audio format:', mimeType);
+
+                this.mediaRecorder = new MediaRecorder(this.audioStream, {
+                    mimeType: mimeType,
+                    audioBitsPerSecond: 16000  // Optimize for speech
+                });
+
+                // Handle audio data chunks
+                this.mediaRecorder.ondataavailable = (event) => {
+                    if (event.data.size > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        // Convert audio blob to base64 and send via WebSocket
+                        const reader = new FileReader();
+                        reader.onload = () => {
+                            const base64Audio = reader.result.split(',')[1]; // Remove data:audio/... prefix
+                            this.ws.send(JSON.stringify({
+                                action: 'audio_chunk',
+                                audio_data: base64Audio,
+                                mime_type: mimeType,
+                                timestamp: Date.now()
+                            }));
+                        };
+                        reader.readAsDataURL(event.data);
+                    }
+                };
+
+                this.mediaRecorder.onerror = (event) => {
+                    console.error('🚨 MediaRecorder error:', event.error);
+                    this.updateStatus('error', 'Audio recording error');
+                };
+
+                // Start recording with small chunks for real-time streaming
+                this.mediaRecorder.start(500); // 500ms chunks for responsive streaming
+                console.log('✅ MediaRecorder started with real-time streaming');
+            }
+
             getSupportedMimeType() {
-                // Safari-compatible audio formats (Safari supports mp4 better than webm)
+                // Prioritize formats that work well for speech recognition
                 const types = [
-                    'audio/mp4',
-                    'audio/mp4;codecs=mp4a.40.2',
-                    'audio/webm;codecs=opus',
+                    'audio/webm;codecs=opus',  // Best for speech, widely supported
                     'audio/webm',
-                    'audio/wav'
+                    'audio/mp4;codecs=mp4a.40.2',  // Good Safari support
+                    'audio/mp4',
+                    'audio/wav'  // Fallback, larger files
                 ];
 
                 console.log('🔍 Checking MediaRecorder support:');
@@ -610,12 +644,25 @@ Would you like to try Demo Mode instead?`;
                     }
                 }
 
-                // Safari fallback - use basic audio recording
+                // Final fallback
                 console.log('⚠️ Using fallback audio format');
-                return 'audio/mp4';
+                return 'audio/webm';
             }
 
             cleanupAudioResources() {
+                console.log('🧹 Cleaning up audio resources...');
+
+                // Stop MediaRecorder if active
+                if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                    try {
+                        this.mediaRecorder.stop();
+                        console.log('🛑 Stopped MediaRecorder');
+                    } catch (error) {
+                        console.warn('⚠️ Error stopping MediaRecorder:', error);
+                    }
+                    this.mediaRecorder = null;
+                }
+
                 // Stop any active audio streams
                 if (this.audioStream) {
                     this.audioStream.getTracks().forEach(track => {
@@ -627,6 +674,7 @@ Would you like to try Demo Mode instead?`;
 
                 // Reset state
                 this.isRecording = false;
+                this.audioChunks = [];
             }
 
             stopRecording() {
