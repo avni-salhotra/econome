@@ -341,20 +341,102 @@ async def conversation_websocket(websocket: WebSocket):
         
         websocket_manager.disconnect(connection_id)
 
+async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
+    """Initialize conversation system for frontend audio streaming"""
+    try:
+        # Start the conversation system but skip backend audio recording
+        session_id = conversation_system.session_id or f"frontend_session_{int(time.time())}"
+
+        # Initialize STT agent for processing but don't start backend recording
+        stt_agent = conversation_system.get_agent("stt")
+        if stt_agent:
+            # Prepare STT agent for frontend streaming (without starting backend audio)
+            stt_agent._is_recording = True
+            stt_agent._session_start_time = time.time()
+            stt_agent._chunk_counter = 0
+            stt_agent._segments.clear()
+
+            # Start the processing thread to handle incoming audio chunks
+            if hasattr(stt_agent, '_processing_thread') and stt_agent._processing_thread is None:
+                import threading
+                stt_agent._processing_thread = threading.Thread(
+                    target=stt_agent._process_audio_chunks,
+                    daemon=True
+                )
+                stt_agent._processing_thread.start()
+                logger.info("🎵 Started STT processing thread for frontend streaming")
+
+        return {
+            "success": True,
+            "message": "Frontend streaming mode initialized",
+            "session_id": session_id,
+            "mode": "frontend_streaming"
+        }
+
+    except Exception as e:
+        logger.error(f"❌ Error starting frontend streaming mode: {e}")
+        return {
+            "success": False,
+            "message": f"Failed to start frontend streaming: {str(e)}"
+        }
+
+async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime_type: str, conversation_system: ConversationIntelligenceSystem):
+    """Process audio chunk received from frontend"""
+    try:
+        import base64
+        import io
+        import numpy as np
+        from pydub import AudioSegment
+
+        # Decode base64 audio data
+        audio_bytes = base64.b64decode(audio_data)
+
+        # Convert audio to the format expected by the speech agent
+        audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+
+        # Convert to mono 16kHz (required for speech recognition)
+        audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
+
+        # Convert to numpy array (float32, normalized to [-1, 1])
+        audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
+        audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+
+        # Get the STT agent and process the audio chunk
+        stt_agent = conversation_system.get_agent("stt")
+        if stt_agent and hasattr(stt_agent, '_audio_queue'):
+            # Add the audio chunk to the processing queue
+            stt_agent._audio_queue.put(audio_array)
+            logger.debug(f"📡 Processed frontend audio chunk: {len(audio_array)} samples")
+        else:
+            logger.warning("⚠️ STT agent not available for frontend audio processing")
+
+    except Exception as e:
+        logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
+        await websocket_manager.send_to_connection(connection_id, {
+            "type": "error",
+            "message": f"Audio processing error: {str(e)}",
+            "timestamp": datetime.now().isoformat()
+        })
+
 async def handle_websocket_command(connection_id: str, command: Dict[str, Any], conversation_system: ConversationIntelligenceSystem):
     """Handle WebSocket commands from frontend"""
     action = command.get("action")
 
     try:
         if action == "start_recording":
-            # Handle both Safari and standard browsers with backend microphone mode
+            # Handle both Safari and standard browsers with frontend or backend mode
             browser = command.get("browser", "unknown")
             mode = command.get("mode", "backend")
+            streaming = command.get("streaming", False)
 
-            logger.info(f"🎤 Starting recording for {browser} browser (mode: {mode})")
+            logger.info(f"🎤 Starting recording for {browser} browser (mode: {mode}, streaming: {streaming})")
 
-            # Use existing backend microphone system
-            result = conversation_system.start_conversation()
+            if mode == "frontend_streaming":
+                # Frontend streaming mode - initialize STT agent for real-time processing
+                result = await start_frontend_streaming_mode(connection_id, conversation_system)
+            else:
+                # Backend microphone mode (fallback)
+                result = conversation_system.start_conversation()
 
             await websocket_manager.send_to_connection(connection_id, {
                 "type": "recording_started",
@@ -362,31 +444,41 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                 "message": result.get("message"),
                 "browser": browser,
                 "mode": mode,
+                "streaming": streaming,
                 "timestamp": datetime.now().isoformat()
             })
 
             if result.get("success"):
                 await websocket_manager.broadcast_system_status(
                     "recording",
-                    f"Recording started for {browser} session {connection_id[:8]}..."
+                    f"Recording started for {browser} session {connection_id[:8]}... (mode: {mode})"
                 )
         
+        elif action == "audio_chunk":
+            # Handle real-time audio chunks from frontend
+            audio_data = command.get("audio_data")
+            mime_type = command.get("mime_type", "audio/webm")
+
+            if audio_data:
+                # Process the audio chunk through the conversation system
+                await process_frontend_audio_chunk(connection_id, audio_data, mime_type, conversation_system)
+
         elif action == "stop_recording":
             await websocket_manager.send_to_connection(connection_id, {
                 "type": "processing",
                 "message": "Stopping recording and running parallel Gemini analysis...",
                 "timestamp": datetime.now().isoformat()
             })
-            
+
             # Broadcast processing update
             await websocket_manager.broadcast_processing_update(
-                "analysis", 
+                "analysis",
                 message="Running parallel Gemini processing (Summary + Action Items)..."
             )
-            
+
             # Use existing stop_conversation method (async)
             results = await conversation_system.stop_conversation()
-            
+
             # Create ephemeral session for results
             token = await session_manager.create_session(
                 summary=results.get("gemini_summary", ""),
@@ -398,11 +490,11 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                     "total_chunks": results.get("total_transcript_chunks", 0)
                 }
             )
-            
+
             # Construct ephemeral URL (update with your actual domain)
             base_url = os.getenv("BASE_URL", "http://localhost:8080")
             ephemeral_url = f"{base_url}/results/{token}"
-            
+
             # Send complete results to this connection
             await websocket_manager.send_analysis_results(connection_id, {
                 "summary": results.get("gemini_summary"),
@@ -413,10 +505,10 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                 "total_transcript_chunks": results.get("total_transcript_chunks", 0),
                 "full_transcript": results.get("full_transcript", "")
             }, ephemeral_url)
-            
+
             # Broadcast completion
             await websocket_manager.broadcast_system_status(
-                "complete", 
+                "complete",
                 f"Analysis complete for session {connection_id[:8]}..."
             )
         
