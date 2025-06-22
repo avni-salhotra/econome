@@ -493,12 +493,12 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     success = True
                     strategy_used = "headerless_matroska"
                 else:
-                    # STRATEGY 2: Fallback to direct Opus decoding
-                    logger.warning("⚠️ Headerless WebM parsing failed, trying direct Opus decoding")
+                    # STRATEGY 2: Fallback to Ogg/Opus decoding
+                    logger.warning("⚠️ Headerless WebM parsing failed, trying Ogg/Opus decoding")
                     
                     ffmpeg_cmd_opus = [
                         'ffmpeg',
-                        '-f', 'opus',           # Try direct Opus decoding
+                        '-f', 'ogg',            # FIXED: Use 'ogg' format for Opus streams
                         '-i', 'pipe:0',
                         '-f', 's16le',
                         '-acodec', 'pcm_s16le',
@@ -520,7 +520,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         audio_array = np.frombuffer(process.stdout, dtype=np.int16).astype(np.float32)
                         audio_array = audio_array / 32768.0
                         success = True
-                        strategy_used = "direct_opus"
+                        strategy_used = "ogg_opus"
                 
                 if success:
                     # STRUCTURED LOGGING: FFmpeg success with timing and strategy
@@ -544,7 +544,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     error_context = {
                         **ffmpeg_context,
                         "pipeline_stage": "ffmpeg_error",
-                        "strategies_attempted": ["headerless_matroska", "direct_opus"],
+                        "strategies_attempted": ["headerless_matroska", "ogg_opus"],
                         "return_code": process.returncode,
                         "stderr": ffmpeg_error,
                         "stdout_length": len(process.stdout) if process.stdout else 0,
