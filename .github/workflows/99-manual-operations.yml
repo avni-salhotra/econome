@@ -1,0 +1,359 @@
+name: "99 - Manual Operations"
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: 'Operation to perform'
+        required: true
+        type: choice
+        options:
+          - 'rollback-production'
+          - 'rollback-staging'
+          - 'scale-up-production'
+          - 'scale-down-production'
+          - 'maintenance-mode'
+          - 'health-check'
+          - 'logs-production'
+          - 'logs-staging'
+      target-revision:
+        description: 'Target revision for rollback (leave empty for previous)'
+        required: false
+        type: string
+      scale-instances:
+        description: 'Number of instances for scaling (1-20)'
+        required: false
+        type: string
+        default: '5'
+      confirm-operation:
+        description: 'Type "CONFIRM" to proceed with operation'
+        required: true
+        type: string
+
+# Security: Operations permissions
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_ID: econome-hackathon
+  SERVICE_NAME: econome
+  STAGING_SERVICE_NAME: econome-staging
+  REGION: us-central1
+
+jobs:
+  # ===================================
+  # OPERATION VALIDATION
+  # ===================================
+  validate-operation:
+    name: "🔍 Validate Operation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    
+    outputs:
+      operation: ${{ inputs.operation }}
+      confirmed: ${{ steps.validate.outputs.confirmed }}
+    
+    steps:
+    - name: "✅ Validate operation confirmation"
+      id: validate
+      run: |
+        if [[ "${{ inputs.confirm-operation }}" != "CONFIRM" ]]; then
+          echo "❌ Operation not confirmed"
+          echo "Please type 'CONFIRM' in the confirmation field to proceed"
+          exit 1
+        fi
+        echo "confirmed=true" >> $GITHUB_OUTPUT
+        echo "✅ Operation confirmed: ${{ inputs.operation }}"
+
+    - name: "📋 Operation summary"
+      run: |
+        echo "# 🔧 Manual Operation Request" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Operation Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Operation**: ${{ inputs.operation }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Target Revision**: ${{ inputs.target-revision || 'Auto-detect' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Scale Instances**: ${{ inputs.scale-instances }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Confirmed**: ✅ Yes" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # ROLLBACK OPERATIONS
+  # ===================================
+  rollback-production:
+    name: "🔄 Rollback Production"
+    runs-on: ubuntu-latest
+    needs: validate-operation
+    if: inputs.operation == 'rollback-production'
+    timeout-minutes: 15
+    environment: production
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "📊 Get current and previous revisions"
+      id: revisions
+      run: |
+        echo "📊 Getting revision information..."
+        
+        # Get all revisions
+        REVISIONS=$(gcloud run revisions list \
+          --service=${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(metadata.name)" \
+          --sort-by="~metadata.creationTimestamp" \
+          --limit=5)
+        
+        CURRENT_REVISION=$(echo "$REVISIONS" | head -n 1)
+        PREVIOUS_REVISION="${{ inputs.target-revision }}"
+        
+        if [[ -z "$PREVIOUS_REVISION" ]]; then
+          PREVIOUS_REVISION=$(echo "$REVISIONS" | sed -n '2p')
+        fi
+        
+        echo "current=$CURRENT_REVISION" >> $GITHUB_OUTPUT
+        echo "previous=$PREVIOUS_REVISION" >> $GITHUB_OUTPUT
+        
+        echo "🔄 Current revision: $CURRENT_REVISION"
+        echo "🔄 Target revision: $PREVIOUS_REVISION"
+
+    - name: "🔄 Perform rollback"
+      run: |
+        echo "🔄 Rolling back production to revision: ${{ steps.revisions.outputs.previous }}"
+        
+        gcloud run services update-traffic ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --to-revisions="${{ steps.revisions.outputs.previous }}=100"
+        
+        echo "✅ Rollback completed"
+
+    - name: "🧪 Verify rollback"
+      run: |
+        echo "🧪 Verifying rollback..."
+        sleep 30
+        
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)")
+        
+        # Health check
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Rollback successful - service is healthy"
+        else
+          echo "❌ Rollback verification failed - service not responding"
+          exit 1
+        fi
+
+  # ===================================
+  # SCALING OPERATIONS
+  # ===================================
+  scale-production:
+    name: "📈 Scale Production"
+    runs-on: ubuntu-latest
+    needs: validate-operation
+    if: inputs.operation == 'scale-up-production' || inputs.operation == 'scale-down-production'
+    timeout-minutes: 10
+    environment: production
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "📈 Scale service"
+      run: |
+        INSTANCES="${{ inputs.scale-instances }}"
+        
+        # Validate instance count
+        if [[ ! "$INSTANCES" =~ ^[0-9]+$ ]] || [[ "$INSTANCES" -lt 0 ]] || [[ "$INSTANCES" -gt 20 ]]; then
+          echo "❌ Invalid instance count: $INSTANCES (must be 0-20)"
+          exit 1
+        fi
+        
+        echo "📈 Scaling production to $INSTANCES instances..."
+        
+        gcloud run services update ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --max-instances="$INSTANCES"
+        
+        echo "✅ Scaling completed"
+
+    - name: "📊 Verify scaling"
+      run: |
+        echo "📊 Verifying scaling..."
+        
+        gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="table(metadata.name,spec.template.metadata.annotations.autoscaling\.knative\.dev/maxScale)"
+
+  # ===================================
+  # HEALTH CHECK OPERATIONS
+  # ===================================
+  health-check:
+    name: "🏥 Health Check"
+    runs-on: ubuntu-latest
+    needs: validate-operation
+    if: inputs.operation == 'health-check'
+    timeout-minutes: 10
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🏥 Check production health"
+      run: |
+        echo "🏥 Checking production service health..."
+        
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)" 2>/dev/null || echo "")
+        
+        if [[ -z "$SERVICE_URL" ]]; then
+          echo "❌ Production service not found"
+          exit 1
+        fi
+        
+        echo "🌐 Production URL: $SERVICE_URL"
+        
+        # Health endpoint
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Production health check: PASSED"
+        else
+          echo "❌ Production health check: FAILED"
+        fi
+        
+        # Main page
+        if curl -f -s "$SERVICE_URL/" > /dev/null; then
+          echo "✅ Production main page: ACCESSIBLE"
+        else
+          echo "❌ Production main page: INACCESSIBLE"
+        fi
+
+    - name: "🏥 Check staging health"
+      run: |
+        echo "🏥 Checking staging service health..."
+        
+        STAGING_URL=$(gcloud run services describe ${{ env.STAGING_SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)" 2>/dev/null || echo "")
+        
+        if [[ -z "$STAGING_URL" ]]; then
+          echo "⚠️ Staging service not found"
+        else
+          echo "🌐 Staging URL: $STAGING_URL"
+          
+          # Health endpoint
+          if curl -f -s "$STAGING_URL/health" > /dev/null; then
+            echo "✅ Staging health check: PASSED"
+          else
+            echo "❌ Staging health check: FAILED"
+          fi
+        fi
+
+    - name: "📊 Service status"
+      run: |
+        echo "📊 Getting service status..."
+        
+        echo "Production Service:"
+        gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="table(metadata.name,status.conditions[0].type,status.conditions[0].status)" 2>/dev/null || echo "Service not found"
+        
+        echo ""
+        echo "Staging Service:"
+        gcloud run services describe ${{ env.STAGING_SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="table(metadata.name,status.conditions[0].type,status.conditions[0].status)" 2>/dev/null || echo "Service not found"
+
+  # ===================================
+  # LOG OPERATIONS
+  # ===================================
+  logs-operation:
+    name: "📋 View Logs"
+    runs-on: ubuntu-latest
+    needs: validate-operation
+    if: inputs.operation == 'logs-production' || inputs.operation == 'logs-staging'
+    timeout-minutes: 5
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "📋 Get recent logs"
+      run: |
+        if [[ "${{ inputs.operation }}" == "logs-production" ]]; then
+          SERVICE="${{ env.SERVICE_NAME }}"
+          echo "📋 Getting production logs..."
+        else
+          SERVICE="${{ env.STAGING_SERVICE_NAME }}"
+          echo "📋 Getting staging logs..."
+        fi
+        
+        echo "Recent logs for $SERVICE:"
+        gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=$SERVICE" \
+          --limit=50 \
+          --format="table(timestamp,severity,textPayload)" \
+          --freshness=1h || echo "No recent logs found"
+
+  # ===================================
+  # OPERATION SUMMARY
+  # ===================================
+  operation-summary:
+    name: "📊 Operation Summary"
+    runs-on: ubuntu-latest
+    needs: [validate-operation, rollback-production, scale-production, health-check, logs-operation]
+    if: always()
+    
+    steps:
+    - name: "📊 Generate operation summary"
+      run: |
+        echo "# 🔧 Manual Operation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Operation Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Operation**: ${{ inputs.operation }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Status**: ${{ needs.rollback-production.result || needs.scale-production.result || needs.health-check.result || needs.logs-operation.result || 'N/A' }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Timestamp**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Operation-specific summary
+        case "${{ inputs.operation }}" in
+          "rollback-production")
+            echo "## 🔄 Rollback Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Production service rolled back to previous revision." >> $GITHUB_STEP_SUMMARY
+            ;;
+          "scale-up-production"|"scale-down-production")
+            echo "## 📈 Scaling Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Production service scaled to ${{ inputs.scale-instances }} instances." >> $GITHUB_STEP_SUMMARY
+            ;;
+          "health-check")
+            echo "## 🏥 Health Check Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Health check completed for all services." >> $GITHUB_STEP_SUMMARY
+            ;;
+          "logs-production"|"logs-staging")
+            echo "## 📋 Logs Summary" >> $GITHUB_STEP_SUMMARY
+            echo "Recent logs retrieved and displayed." >> $GITHUB_STEP_SUMMARY
+            ;;
+        esac

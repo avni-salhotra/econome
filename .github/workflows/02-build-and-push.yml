@@ -1,0 +1,190 @@
+name: "02 - Build & Push"
+
+on:
+  push:
+    branches: [ main ]
+  workflow_run:
+    workflows: ["01 - Test & Validate"]
+    types: [completed]
+    branches: [ main ]
+
+# Security: Minimal required permissions
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_ID: econome-hackathon
+  SERVICE_NAME: econome
+  REGION: us-central1
+  REGISTRY: gcr.io
+
+jobs:
+  # ===================================
+  # BUILD AND PUSH TO REGISTRY
+  # ===================================
+  build-and-push:
+    name: "🏗️ Build & Push Container"
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # Only run if tests passed (for workflow_run trigger) or on direct push to main
+    if: |
+      github.event_name == 'push' || 
+      (github.event_name == 'workflow_run' && github.event.workflow_run.conclusion == 'success')
+    
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+      build-id: ${{ steps.meta.outputs.labels }}
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🐳 Configure Docker for GCR"
+      run: gcloud auth configure-docker
+
+    - name: "🏷️ Extract metadata"
+      id: meta
+      uses: docker/metadata-action@v5
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}
+        tags: |
+          type=ref,event=branch
+          type=sha,prefix={{branch}}-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=raw,value=${{ github.run_number }}
+        labels: |
+          org.opencontainers.image.title=Econome
+          org.opencontainers.image.description=Privacy-first conversation intelligence
+          org.opencontainers.image.vendor=Econome Team
+          org.opencontainers.image.version=${{ github.sha }}
+          build.number=${{ github.run_number }}
+          build.id=${{ github.run_id }}
+
+    - name: "🐳 Set up Docker Buildx"
+      uses: docker/setup-buildx-action@v3
+
+    - name: "🏗️ Build and push Docker image"
+      id: build
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: devops/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}
+        labels: ${{ steps.meta.outputs.labels }}
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+        platforms: linux/amd64
+
+    - name: "📋 Generate build summary"
+      run: |
+        echo "# 🏗️ Build Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📦 Container Image" >> $GITHUB_STEP_SUMMARY
+        echo "- **Registry**: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Tags**: " >> $GITHUB_STEP_SUMMARY
+        echo "${{ steps.meta.outputs.tags }}" | sed 's/^/  - /' >> $GITHUB_STEP_SUMMARY
+        echo "- **Digest**: \`${{ steps.build.outputs.digest }}\`" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build ID**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🚀 Next Steps" >> $GITHUB_STEP_SUMMARY
+        echo "- ✅ Image pushed to Container Registry" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔄 Staging deployment will start automatically" >> $GITHUB_STEP_SUMMARY
+        echo "- 📊 Monitor staging deployment in next workflow" >> $GITHUB_STEP_SUMMARY
+
+    - name: "🔍 Verify image in registry"
+      run: |
+        echo "🔍 Verifying image was pushed successfully..."
+        gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+          --limit=5 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"
+
+  # ===================================
+  # TRIGGER STAGING DEPLOYMENT
+  # ===================================
+  trigger-staging:
+    name: "🎯 Trigger Staging Deployment"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: success()
+
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🚀 Trigger staging deployment"
+      run: |
+        echo "🚀 Triggering staging deployment..."
+        gh workflow run "03 - Deploy Staging" \
+          --field image-tag="${{ github.run_number }}" \
+          --field build-id="${{ github.run_id }}"
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: "📢 Notify staging deployment"
+      run: |
+        echo "# 🎯 Staging Deployment Triggered" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Staging" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Tag**: ${{ github.run_number }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build ID**: ${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🔗 Links" >> $GITHUB_STEP_SUMMARY
+        echo "- [View Staging Deployment Workflow](https://github.com/${{ github.repository }}/actions)" >> $GITHUB_STEP_SUMMARY
+        echo "- [Staging Service URL](https://econome-staging-${{ env.PROJECT_ID }}.a.run.app)" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # CLEANUP OLD IMAGES
+  # ===================================
+  cleanup-registry:
+    name: "🧹 Cleanup Old Images"
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    if: success()
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🧹 Clean up old images (keep last 10)"
+      run: |
+        echo "🧹 Cleaning up old container images..."
+        
+        # Get list of images older than the last 10
+        OLD_IMAGES=$(gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+          --limit=999 --sort-by=~TIMESTAMP --format="get(digest)" | tail -n +11)
+        
+        if [ -n "$OLD_IMAGES" ]; then
+          echo "🗑️ Deleting old images..."
+          for digest in $OLD_IMAGES; do
+            echo "Deleting: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}@$digest"
+            gcloud container images delete "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}@$digest" \
+              --quiet --force-delete-tags || echo "⚠️ Failed to delete $digest"
+          done
+          echo "✅ Cleanup completed"
+        else
+          echo "✅ No old images to clean up"
+        fi
+
+    - name: "📊 Registry status"
+      run: |
+        echo "📊 Current images in registry:"
+        gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+          --limit=10 --sort-by=~TIMESTAMP --format="table(digest,tags,timestamp)"

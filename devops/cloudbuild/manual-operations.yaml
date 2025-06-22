@@ -1,0 +1,360 @@
+# ===================================
+# CLOUD BUILD: MANUAL OPERATIONS PIPELINE
+# ===================================
+# Purpose: Manual operations like rollback, scaling, maintenance
+# Trigger: Manual only with explicit operation type
+# Environment: Variable (staging/production)
+
+steps:
+  # ===================================
+  # OPERATION VALIDATION
+  # ===================================
+  - id: 'validate-operation'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🔧 Validating manual operation..."
+        echo "Operation: ${_OPERATION}"
+        echo "Target Service: ${_TARGET_SERVICE}"
+        echo "Region: ${_REGION}"
+        echo "Build ID: $BUILD_ID"
+        
+        # Validate operation type
+        case "${_OPERATION}" in
+          "rollback"|"scale-up"|"scale-down"|"health-check"|"logs"|"maintenance-mode")
+            echo "✅ Valid operation: ${_OPERATION}"
+            ;;
+          *)
+            echo "❌ Invalid operation: ${_OPERATION}"
+            echo "Valid operations: rollback, scale-up, scale-down, health-check, logs, maintenance-mode"
+            exit 1
+            ;;
+        esac
+        
+        # Check if target service exists
+        if gcloud run services describe ${_TARGET_SERVICE} --region=${_REGION} > /dev/null 2>&1; then
+          echo "✅ Target service found: ${_TARGET_SERVICE}"
+        else
+          echo "❌ Target service not found: ${_TARGET_SERVICE}"
+          exit 1
+        fi
+
+  # ===================================
+  # ROLLBACK OPERATION
+  # ===================================
+  - id: 'rollback-operation'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${_OPERATION}" != "rollback" ]]; then
+          echo "⏭️ Skipping rollback operation"
+          exit 0
+        fi
+        
+        echo "🔄 Performing rollback operation..."
+        
+        # Get current and previous revisions
+        REVISIONS=$(gcloud run revisions list \
+          --service=${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="value(metadata.name)" \
+          --sort-by="~metadata.creationTimestamp" \
+          --limit=5)
+        
+        CURRENT_REVISION=$(echo "$REVISIONS" | head -n 1)
+        PREVIOUS_REVISION="${_TARGET_REVISION}"
+        
+        if [[ -z "$PREVIOUS_REVISION" ]]; then
+          PREVIOUS_REVISION=$(echo "$REVISIONS" | sed -n '2p')
+        fi
+        
+        echo "🔄 Current revision: $CURRENT_REVISION"
+        echo "🔄 Rolling back to: $PREVIOUS_REVISION"
+        
+        if [[ -z "$PREVIOUS_REVISION" ]]; then
+          echo "❌ No previous revision found for rollback"
+          exit 1
+        fi
+        
+        # Perform rollback
+        gcloud run services update-traffic ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --to-revisions="$PREVIOUS_REVISION=100"
+        
+        echo "✅ Rollback completed"
+        
+        # Verify rollback
+        sleep 30
+        SERVICE_URL=$(gcloud run services describe ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Rollback verification successful"
+        else
+          echo "❌ Rollback verification failed"
+          exit 1
+        fi
+
+  # ===================================
+  # SCALING OPERATIONS
+  # ===================================
+  - id: 'scaling-operation'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${_OPERATION}" != "scale-up" && "${_OPERATION}" != "scale-down" ]]; then
+          echo "⏭️ Skipping scaling operation"
+          exit 0
+        fi
+        
+        echo "📈 Performing scaling operation: ${_OPERATION}"
+        
+        # Validate instance count
+        INSTANCES="${_SCALE_INSTANCES:-5}"
+        if [[ ! "$INSTANCES" =~ ^[0-9]+$ ]] || [[ "$INSTANCES" -lt 0 ]] || [[ "$INSTANCES" -gt 50 ]]; then
+          echo "❌ Invalid instance count: $INSTANCES (must be 0-50)"
+          exit 1
+        fi
+        
+        echo "📈 Scaling ${_TARGET_SERVICE} to $INSTANCES instances..."
+        
+        # Update service scaling
+        gcloud run services update ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --max-instances="$INSTANCES"
+        
+        echo "✅ Scaling operation completed"
+        
+        # Show current scaling configuration
+        echo "📊 Current scaling configuration:"
+        gcloud run services describe ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="table(metadata.name,spec.template.metadata.annotations.autoscaling\.knative\.dev/maxScale,spec.template.metadata.annotations.autoscaling\.knative\.dev/minScale)"
+
+  # ===================================
+  # HEALTH CHECK OPERATION
+  # ===================================
+  - id: 'health-check-operation'
+    name: 'gcr.io/cloud-builders/curl'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${_OPERATION}" != "health-check" ]]; then
+          echo "⏭️ Skipping health check operation"
+          exit 0
+        fi
+        
+        echo "🏥 Performing comprehensive health check..."
+        
+        # Get service URL
+        SERVICE_URL=$(gcloud run services describe ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="value(status.url)")
+        
+        echo "🌐 Service URL: $SERVICE_URL"
+        
+        # Health endpoint check
+        echo "🔍 Testing health endpoint..."
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Health endpoint: PASSED"
+          curl -s "$SERVICE_URL/health" | head -5
+        else
+          echo "❌ Health endpoint: FAILED"
+        fi
+        
+        # Main page check
+        echo "🔍 Testing main page..."
+        if curl -f -s "$SERVICE_URL/" > /dev/null; then
+          echo "✅ Main page: ACCESSIBLE"
+        else
+          echo "❌ Main page: INACCESSIBLE"
+        fi
+        
+        # API docs check
+        echo "🔍 Testing API documentation..."
+        if curl -f -s "$SERVICE_URL/docs" > /dev/null; then
+          echo "✅ API docs: ACCESSIBLE"
+        else
+          echo "⚠️ API docs: NOT ACCESSIBLE"
+        fi
+        
+        # Performance check
+        echo "⚡ Performance check..."
+        for i in {1..3}; do
+          START_TIME=$(date +%s%N)
+          curl -f -s "$SERVICE_URL/health" > /dev/null
+          END_TIME=$(date +%s%N)
+          RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+          echo "Response time $i: ${RESPONSE_TIME}ms"
+        done
+        
+        echo "✅ Health check completed"
+
+  # ===================================
+  # LOGS OPERATION
+  # ===================================
+  - id: 'logs-operation'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${_OPERATION}" != "logs" ]]; then
+          echo "⏭️ Skipping logs operation"
+          exit 0
+        fi
+        
+        echo "📋 Retrieving recent logs for ${_TARGET_SERVICE}..."
+        
+        # Get recent logs
+        echo "📋 Recent logs (last 1 hour):"
+        gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${_TARGET_SERVICE}" \
+          --limit=100 \
+          --format="table(timestamp,severity,textPayload)" \
+          --freshness=1h || echo "No recent logs found"
+        
+        # Get error logs specifically
+        echo ""
+        echo "🚨 Recent error logs:"
+        gcloud logging read "resource.type=cloud_run_revision AND resource.labels.service_name=${_TARGET_SERVICE} AND severity>=ERROR" \
+          --limit=20 \
+          --format="table(timestamp,severity,textPayload)" \
+          --freshness=6h || echo "No recent error logs found"
+        
+        echo "✅ Logs retrieval completed"
+
+  # ===================================
+  # MAINTENANCE MODE OPERATION
+  # ===================================
+  - id: 'maintenance-mode-operation'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        if [[ "${_OPERATION}" != "maintenance-mode" ]]; then
+          echo "⏭️ Skipping maintenance mode operation"
+          exit 0
+        fi
+        
+        echo "🔧 Setting maintenance mode for ${_TARGET_SERVICE}..."
+        
+        # Scale down to 0 instances for maintenance
+        echo "📉 Scaling down to 0 instances..."
+        gcloud run services update ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --max-instances=0 \
+          --min-instances=0
+        
+        echo "⚠️ Service is now in maintenance mode (0 instances)"
+        echo "⚠️ Service will not respond to requests"
+        echo "🔧 To exit maintenance mode, use scale-up operation"
+        
+        echo "✅ Maintenance mode activated"
+
+  # ===================================
+  # SERVICE STATUS CHECK
+  # ===================================
+  - id: 'service-status'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "📊 Getting service status..."
+        
+        # Service details
+        echo "📋 Service Information:"
+        gcloud run services describe ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="table(metadata.name,status.url,status.latestReadyRevisionName)"
+        
+        echo ""
+        echo "📊 Service Configuration:"
+        gcloud run services describe ${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --format="table(spec.template.spec.template.spec.containers[0].resources.limits.memory,spec.template.spec.template.spec.containers[0].resources.limits.cpu,spec.template.metadata.annotations.autoscaling\.knative\.dev/maxScale)"
+        
+        echo ""
+        echo "🔄 Recent Revisions:"
+        gcloud run revisions list \
+          --service=${_TARGET_SERVICE} \
+          --region=${_REGION} \
+          --limit=5 \
+          --format="table(metadata.name,status.conditions[0].status,metadata.creationTimestamp)"
+
+  # ===================================
+  # OPERATION SUMMARY
+  # ===================================
+  - id: 'operation-summary'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "📊 Generating operation summary..."
+        
+        # Create operation summary
+        cat > /workspace/operation-summary.md << EOF
+        # Manual Operation Summary
+        
+        ## Operation Details
+        - **Operation**: ${_OPERATION}
+        - **Target Service**: ${_TARGET_SERVICE}
+        - **Region**: ${_REGION}
+        - **Build ID**: $BUILD_ID
+        - **Timestamp**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        ## Operation Results
+        Operation "${_OPERATION}" completed for service "${_TARGET_SERVICE}".
+        
+        ## Service Status
+        Check the service status in the Cloud Console or use health-check operation.
+        
+        ## Next Steps
+        - Monitor service performance
+        - Check logs if issues arise
+        - Use appropriate operations for further management
+        EOF
+        
+        echo "✅ Manual operation completed: ${_OPERATION}"
+        echo "📊 Summary saved to operation-summary.md"
+
+# ===================================
+# ARTIFACTS STORAGE
+# ===================================
+artifacts:
+  objects:
+    location: 'gs://$PROJECT_ID-build-artifacts/operations/$BUILD_ID'
+    paths:
+      - '/workspace/operation-summary.md'
+
+# ===================================
+# BUILD OPTIONS
+# ===================================
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: ALLOW_LOOSE
+
+# Explicitly specify service account for security
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/econome-builder@$PROJECT_ID.iam.gserviceaccount.com
+
+# Operation timeout
+timeout: '900s'
+
+# Substitution variables
+substitutions:
+  _OPERATION: 'health-check'  # Default operation
+  _TARGET_SERVICE: 'econome'  # Default to production
+  _TARGET_REVISION: ''        # For rollback operations
+  _SCALE_INSTANCES: '5'       # For scaling operations
+  _REGION: 'us-central1'      # Default region

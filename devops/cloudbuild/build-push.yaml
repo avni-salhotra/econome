@@ -1,0 +1,274 @@
+# ===================================
+# CLOUD BUILD: BUILD & PUSH PIPELINE
+# ===================================
+# Purpose: Build Docker image and push to Container Registry
+# Trigger: GitHub Actions after successful tests
+# Environment: CI (build only, no deployment)
+
+steps:
+  # ===================================
+  # BUILD PREPARATION
+  # ===================================
+  - id: 'build-info'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🏗️ Starting build pipeline..."
+        echo "Project: $PROJECT_ID"
+        echo "Build ID: $BUILD_ID"
+        echo "Branch: ${BRANCH_NAME:-main}"
+        echo "Commit SHA: ${COMMIT_SHA:-unknown}"
+        
+        # Create build metadata
+        cat > /workspace/build-metadata.json << EOF
+        {
+          "buildId": "$BUILD_ID",
+          "projectId": "$PROJECT_ID",
+          "branch": "${BRANCH_NAME:-main}",
+          "commitSha": "${COMMIT_SHA:-unknown}",
+          "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
+          "environment": "ci"
+        }
+        EOF
+        
+        echo "✅ Build preparation complete"
+
+  # ===================================
+  # DOCKER IMAGE BUILD
+  # ===================================
+  - id: 'build-image'
+    name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-f'
+      - 'devops/Dockerfile'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/econome:$BUILD_ID'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/econome:latest'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA'
+      - '--label'
+      - 'build.id=$BUILD_ID'
+      - '--label'
+      - 'build.timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")'
+      - '--label'
+      - 'build.branch=${BRANCH_NAME:-main}'
+      - '--label'
+      - 'build.commit=${COMMIT_SHA:-unknown}'
+      - '--label'
+      - 'org.opencontainers.image.title=Econome'
+      - '--label'
+      - 'org.opencontainers.image.description=Privacy-first conversation intelligence'
+      - '--label'
+      - 'org.opencontainers.image.vendor=Econome Team'
+      - '--label'
+      - 'org.opencontainers.image.version=${COMMIT_SHA:-unknown}'
+      - '.'
+
+  # ===================================
+  # IMAGE SECURITY SCANNING
+  # ===================================
+  - id: 'scan-image'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Scanning image for vulnerabilities..."
+        
+        # Note: Container Analysis API scanning
+        # This will automatically scan the image when pushed
+        echo "📊 Image will be scanned automatically after push"
+        echo "🔍 Check Container Analysis in GCP Console for results"
+        
+        # Basic image inspection
+        docker inspect gcr.io/$PROJECT_ID/econome:$BUILD_ID > /workspace/image-inspect.json
+        
+        echo "✅ Image inspection complete"
+
+  # ===================================
+  # PUSH TO CONTAINER REGISTRY
+  # ===================================
+  - id: 'push-build-id'
+    name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/econome:$BUILD_ID'
+
+  - id: 'push-latest'
+    name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/econome:latest'
+
+  - id: 'push-branch-sha'
+    name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA'
+
+  # ===================================
+  # VERIFY PUSH SUCCESS
+  # ===================================
+  - id: 'verify-push'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Verifying image push..."
+        
+        # List recent images
+        gcloud container images list-tags gcr.io/$PROJECT_ID/econome \
+          --limit=5 \
+          --sort-by=~TIMESTAMP \
+          --format="table(digest,tags,timestamp)"
+        
+        # Verify specific build image exists
+        if gcloud container images describe gcr.io/$PROJECT_ID/econome:$BUILD_ID > /dev/null 2>&1; then
+          echo "✅ Build image verified: gcr.io/$PROJECT_ID/econome:$BUILD_ID"
+        else
+          echo "❌ Build image not found"
+          exit 1
+        fi
+        
+        echo "✅ Image push verification complete"
+
+  # ===================================
+  # BUILD ARTIFACTS
+  # ===================================
+  - id: 'create-artifacts'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "📦 Creating build artifacts..."
+        
+        # Create deployment manifest
+        cat > /workspace/deployment-manifest.yaml << EOF
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: econome-build-$BUILD_ID
+        data:
+          buildId: "$BUILD_ID"
+          imageTag: "gcr.io/$PROJECT_ID/econome:$BUILD_ID"
+          latestTag: "gcr.io/$PROJECT_ID/econome:latest"
+          branchTag: "gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA"
+          timestamp: "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+          environment: "ci"
+        EOF
+        
+        # Create build summary
+        cat > /workspace/build-summary.md << EOF
+        # Build Summary
+        
+        ## Build Information
+        - **Build ID**: $BUILD_ID
+        - **Project**: $PROJECT_ID
+        - **Branch**: ${BRANCH_NAME:-main}
+        - **Commit**: ${COMMIT_SHA:-unknown}
+        - **Timestamp**: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        ## Container Images
+        - \`gcr.io/$PROJECT_ID/econome:$BUILD_ID\`
+        - \`gcr.io/$PROJECT_ID/econome:latest\`
+        - \`gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA\`
+        
+        ## Next Steps
+        - ✅ Images pushed to Container Registry
+        - 🔄 Ready for staging deployment
+        - 📊 Monitor deployment pipeline
+        EOF
+        
+        echo "✅ Build artifacts created"
+
+  # ===================================
+  # CLEANUP OLD IMAGES
+  # ===================================
+  - id: 'cleanup-old-images'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🧹 Cleaning up old images..."
+        
+        # Keep last 15 images, delete older ones
+        OLD_IMAGES=$(gcloud container images list-tags gcr.io/$PROJECT_ID/econome \
+          --limit=999 \
+          --sort-by=~TIMESTAMP \
+          --format="get(digest)" | tail -n +16)
+        
+        if [ -n "$OLD_IMAGES" ]; then
+          echo "🗑️ Deleting old images..."
+          for digest in $OLD_IMAGES; do
+            echo "Deleting: gcr.io/$PROJECT_ID/econome@$digest"
+            gcloud container images delete "gcr.io/$PROJECT_ID/econome@$digest" \
+              --quiet --force-delete-tags || echo "⚠️ Failed to delete $digest"
+          done
+          echo "✅ Cleanup completed"
+        else
+          echo "✅ No old images to clean up"
+        fi
+
+  # ===================================
+  # BUILD COMPLETION
+  # ===================================
+  - id: 'build-complete'
+    name: 'gcr.io/cloud-builders/gcloud'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        echo "🎉 Build pipeline complete!"
+        echo ""
+        echo "📦 Built Images:"
+        echo "  - gcr.io/$PROJECT_ID/econome:$BUILD_ID"
+        echo "  - gcr.io/$PROJECT_ID/econome:latest"
+        echo "  - gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA"
+        echo ""
+        echo "🚀 Ready for deployment to staging environment"
+
+# ===================================
+# IMAGES TO STORE
+# ===================================
+images:
+  - 'gcr.io/$PROJECT_ID/econome:$BUILD_ID'
+  - 'gcr.io/$PROJECT_ID/econome:latest'
+  - 'gcr.io/$PROJECT_ID/econome:${BRANCH_NAME:-main}-$SHORT_SHA'
+
+# ===================================
+# ARTIFACTS STORAGE
+# ===================================
+artifacts:
+  objects:
+    location: 'gs://$PROJECT_ID-build-artifacts/builds/$BUILD_ID'
+    paths:
+      - '/workspace/build-metadata.json'
+      - '/workspace/deployment-manifest.yaml'
+      - '/workspace/build-summary.md'
+      - '/workspace/image-inspect.json'
+
+# ===================================
+# BUILD OPTIONS
+# ===================================
+options:
+  machineType: 'E2_HIGHCPU_8'
+  logging: CLOUD_LOGGING_ONLY
+  substitution_option: ALLOW_LOOSE
+
+# Explicitly specify service account for security
+serviceAccount: projects/$PROJECT_ID/serviceAccounts/econome-builder@$PROJECT_ID.iam.gserviceaccount.com
+
+# Build timeout
+timeout: '1200s'
+
+# Substitution variables
+substitutions:
+  _ENVIRONMENT: 'ci'
+  _BUILD_TYPE: 'production'

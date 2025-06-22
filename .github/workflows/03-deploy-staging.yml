@@ -1,0 +1,264 @@
+name: "03 - Deploy Staging"
+
+on:
+  workflow_call:
+    inputs:
+      image-tag:
+        description: 'Image tag to deploy'
+        required: true
+        type: string
+      build-id:
+        description: 'Build ID for tracking'
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Image tag to deploy (default: latest)'
+        required: false
+        default: 'latest'
+        type: string
+
+# Security: Deployment permissions
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_ID: econome-hackathon
+  SERVICE_NAME: econome-staging
+  REGION: us-central1
+  REGISTRY: gcr.io
+  ENVIRONMENT: staging
+
+jobs:
+  # ===================================
+  # DEPLOY TO STAGING
+  # ===================================
+  deploy-staging:
+    name: "🚀 Deploy to Staging"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: staging
+    
+    outputs:
+      service-url: ${{ steps.deploy.outputs.url }}
+      deployment-status: ${{ steps.deploy.outcome }}
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🏷️ Set image tag"
+      id: image-tag
+      run: |
+        IMAGE_TAG="${{ inputs.image-tag || 'latest' }}"
+        echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+        echo "🏷️ Using image tag: $IMAGE_TAG"
+
+    - name: "🚀 Deploy to Cloud Run Staging"
+      id: deploy
+      run: |
+        echo "🚀 Deploying to staging environment..."
+        
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ steps.image-tag.outputs.image-tag }}" \
+          --platform=managed \
+          --region=${{ env.REGION }} \
+          --allow-unauthenticated \
+          --memory=1Gi \
+          --cpu=1 \
+          --concurrency=50 \
+          --timeout=1800 \
+          --max-instances=3 \
+          --min-instances=0 \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},PORT=8080,ENVIRONMENT=${{ env.ENVIRONMENT }}" \
+          --set-secrets="/secrets/speech-credentials.json=speech-credentials:latest" \
+          --set-secrets="/secrets/gemini-credentials.json=gemini-credentials:latest" \
+          --tag="build-${{ inputs.build-id || github.run_id }}" \
+          --format="value(status.url)"
+
+    - name: "🔍 Get service URL"
+      id: get-url
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)")
+        echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+        echo "🌐 Staging URL: $SERVICE_URL"
+
+    - name: "⏱️ Wait for deployment to be ready"
+      run: |
+        echo "⏱️ Waiting for service to be ready..."
+        sleep 30
+        
+        # Check if service is responding
+        SERVICE_URL="${{ steps.get-url.outputs.url }}"
+        for i in {1..10}; do
+          if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+            echo "✅ Service is responding"
+            break
+          else
+            echo "⏳ Attempt $i/10: Service not ready yet, waiting..."
+            sleep 10
+          fi
+        done
+
+    - name: "📋 Deployment summary"
+      run: |
+        echo "# 🚀 Staging Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Staging" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Region**: ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Tag**: ${{ steps.image-tag.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Build ID**: ${{ inputs.build-id || github.run_id }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🌐 Service URLs" >> $GITHUB_STEP_SUMMARY
+        echo "- **Staging App**: [${{ steps.get-url.outputs.url }}](${{ steps.get-url.outputs.url }})" >> $GITHUB_STEP_SUMMARY
+        echo "- **Health Check**: [${{ steps.get-url.outputs.url }}/health](${{ steps.get-url.outputs.url }}/health)" >> $GITHUB_STEP_SUMMARY
+        echo "- **API Docs**: [${{ steps.get-url.outputs.url }}/docs](${{ steps.get-url.outputs.url }}/docs)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🔧 Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "- **Memory**: 1Gi" >> $GITHUB_STEP_SUMMARY
+        echo "- **CPU**: 1" >> $GITHUB_STEP_SUMMARY
+        echo "- **Concurrency**: 50" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Instances**: 3" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # RUN STAGING TESTS
+  # ===================================
+  staging-tests:
+    name: "🧪 Staging Integration Tests"
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    timeout-minutes: 10
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🐍 Set up Python 3.12"
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: "📦 Install test dependencies"
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytest pytest-asyncio
+
+    - name: "🌐 Test staging service health"
+      run: |
+        SERVICE_URL="${{ needs.deploy-staging.outputs.service-url }}"
+        echo "🌐 Testing staging service at: $SERVICE_URL"
+        
+        # Test health endpoint
+        echo "🔍 Testing health endpoint..."
+        curl -f "$SERVICE_URL/health" || exit 1
+        
+        # Test main page
+        echo "🔍 Testing main page..."
+        curl -f "$SERVICE_URL/" || exit 1
+        
+        # Test API docs
+        echo "🔍 Testing API documentation..."
+        curl -f "$SERVICE_URL/docs" || exit 1
+        
+        echo "✅ All staging health checks passed"
+
+    - name: "🧪 Run end-to-end tests against staging"
+      run: |
+        SERVICE_URL="${{ needs.deploy-staging.outputs.service-url }}"
+        echo "🧪 Running E2E tests against staging..."
+        
+        # Test WebSocket connection (basic connectivity)
+        python -c "
+        import asyncio
+        import websockets
+        import json
+        import ssl
+        
+        async def test_websocket():
+            uri = '$SERVICE_URL'.replace('https://', 'wss://') + '/ws/conversation'
+            print(f'🔌 Testing WebSocket connection to: {uri}')
+            
+            try:
+                ssl_context = ssl.create_default_context()
+                async with websockets.connect(uri, ssl=ssl_context) as websocket:
+                    print('✅ WebSocket connection successful')
+                    
+                    # Send a test message
+                    test_message = {'type': 'test', 'data': 'connection_test'}
+                    await websocket.send(json.dumps(test_message))
+                    print('✅ Message sent successfully')
+                    
+                    # Wait for response (with timeout)
+                    try:
+                        response = await asyncio.wait_for(websocket.recv(), timeout=5.0)
+                        print(f'✅ Received response: {response[:100]}...')
+                    except asyncio.TimeoutError:
+                        print('⚠️ No response received (timeout), but connection works')
+                    
+            except Exception as e:
+                print(f'❌ WebSocket test failed: {e}')
+                exit(1)
+        
+        asyncio.run(test_websocket())
+        "
+
+    - name: "📊 Generate test report"
+      run: |
+        echo "# 🧪 Staging Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ✅ Test Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 🌐 Health Check: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 📄 Main Page: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 📚 API Docs: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔌 WebSocket: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🚀 Ready for Production" >> $GITHUB_STEP_SUMMARY
+        echo "Staging deployment is healthy and ready for production deployment." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "**Next Steps:**" >> $GITHUB_STEP_SUMMARY
+        echo "1. Review staging deployment" >> $GITHUB_STEP_SUMMARY
+        echo "2. Run manual tests if needed" >> $GITHUB_STEP_SUMMARY
+        echo "3. Trigger production deployment when ready" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # STAGING DEPLOYMENT STATUS
+  # ===================================
+  deployment-status:
+    name: "📊 Deployment Status"
+    runs-on: ubuntu-latest
+    needs: [deploy-staging, staging-tests]
+    if: always()
+    
+    steps:
+    - name: "📊 Generate final status"
+      run: |
+        echo "# 📊 Staging Deployment Status" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.deploy-staging.result }}" == "success" && "${{ needs.staging-tests.result }}" == "success" ]]; then
+          echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "Staging environment is ready and all tests passed." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Staging URL**: [${{ needs.deploy-staging.outputs.service-url }}](${{ needs.deploy-staging.outputs.service-url }})" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ❌ Deployment Issues" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy Status: ${{ needs.deploy-staging.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Status: ${{ needs.staging-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Please review the logs and fix issues before proceeding to production." >> $GITHUB_STEP_SUMMARY
+        fi

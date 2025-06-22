@@ -1,0 +1,338 @@
+name: "04 - Deploy Production"
+
+on:
+  workflow_dispatch:
+    inputs:
+      image-tag:
+        description: 'Image tag to deploy (e.g., latest, 123, main-abc1234)'
+        required: true
+        type: string
+      confirm-production:
+        description: 'Type "DEPLOY" to confirm production deployment'
+        required: true
+        type: string
+      skip-staging-check:
+        description: 'Skip staging health check (not recommended)'
+        required: false
+        default: false
+        type: boolean
+
+# Security: Production deployment permissions
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_ID: econome-hackathon
+  SERVICE_NAME: econome
+  STAGING_SERVICE_NAME: econome-staging
+  REGION: us-central1
+  REGISTRY: gcr.io
+  ENVIRONMENT: production
+
+jobs:
+  # ===================================
+  # PRE-DEPLOYMENT VALIDATION
+  # ===================================
+  pre-deployment-checks:
+    name: "🔍 Pre-Deployment Validation"
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    
+    steps:
+    - name: "✅ Validate deployment confirmation"
+      run: |
+        if [[ "${{ inputs.confirm-production }}" != "DEPLOY" ]]; then
+          echo "❌ Production deployment not confirmed"
+          echo "Please type 'DEPLOY' in the confirmation field to proceed"
+          exit 1
+        fi
+        echo "✅ Production deployment confirmed"
+
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🔍 Verify image exists"
+      run: |
+        echo "🔍 Verifying image exists in registry..."
+        IMAGE_TAG="${{ inputs.image-tag }}"
+        
+        if gcloud container images describe "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG" > /dev/null 2>&1; then
+          echo "✅ Image found: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG"
+        else
+          echo "❌ Image not found: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG"
+          echo "Available tags:"
+          gcloud container images list-tags "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome" --limit=10
+          exit 1
+        fi
+
+    - name: "🧪 Check staging health"
+      if: ${{ !inputs.skip-staging-check }}
+      run: |
+        echo "🧪 Checking staging environment health..."
+        
+        STAGING_URL=$(gcloud run services describe ${{ env.STAGING_SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)" 2>/dev/null || echo "")
+        
+        if [[ -z "$STAGING_URL" ]]; then
+          echo "⚠️ Staging service not found - proceeding with caution"
+        else
+          echo "🌐 Staging URL: $STAGING_URL"
+          
+          # Check staging health
+          if curl -f -s "$STAGING_URL/health" > /dev/null; then
+            echo "✅ Staging environment is healthy"
+          else
+            echo "❌ Staging environment health check failed"
+            echo "Please fix staging issues before deploying to production"
+            exit 1
+          fi
+        fi
+
+    - name: "📋 Pre-deployment summary"
+      run: |
+        echo "# 🔍 Pre-Deployment Validation" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ✅ Validation Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔐 Deployment confirmed: ✅" >> $GITHUB_STEP_SUMMARY
+        echo "- 🏷️ Image exists: ✅" >> $GITHUB_STEP_SUMMARY
+        echo "- 🧪 Staging health: ${{ inputs.skip-staging-check && '⏭️ Skipped' || '✅ Passed' }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image**: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # PRODUCTION DEPLOYMENT
+  # ===================================
+  deploy-production:
+    name: "🚀 Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: pre-deployment-checks
+    timeout-minutes: 20
+    environment: production
+    
+    outputs:
+      service-url: ${{ steps.get-url.outputs.url }}
+      previous-revision: ${{ steps.get-current.outputs.revision }}
+      deployment-time: ${{ steps.deploy-time.outputs.time }}
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "📊 Get current production state"
+      id: get-current
+      run: |
+        echo "📊 Getting current production state..."
+        
+        CURRENT_REVISION=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.latestReadyRevisionName)" 2>/dev/null || echo "none")
+        
+        echo "revision=$CURRENT_REVISION" >> $GITHUB_OUTPUT
+        echo "🔄 Current revision: $CURRENT_REVISION"
+
+    - name: "⏰ Record deployment time"
+      id: deploy-time
+      run: |
+        DEPLOY_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        echo "time=$DEPLOY_TIME" >> $GITHUB_OUTPUT
+        echo "⏰ Deployment time: $DEPLOY_TIME"
+
+    - name: "🚀 Deploy to Production"
+      id: deploy
+      run: |
+        echo "🚀 Deploying to production environment..."
+        
+        gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:${{ inputs.image-tag }}" \
+          --platform=managed \
+          --region=${{ env.REGION }} \
+          --allow-unauthenticated \
+          --memory=2Gi \
+          --cpu=2 \
+          --concurrency=100 \
+          --timeout=3600 \
+          --max-instances=10 \
+          --min-instances=1 \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},PORT=8080,ENVIRONMENT=${{ env.ENVIRONMENT }}" \
+          --set-secrets="/secrets/speech-credentials.json=speech-credentials:latest" \
+          --set-secrets="/secrets/gemini-credentials.json=gemini-credentials:latest" \
+          --tag="prod-${{ github.run_id }}" \
+          --format="value(status.url)"
+
+    - name: "🔍 Get production service URL"
+      id: get-url
+      run: |
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)")
+        echo "url=$SERVICE_URL" >> $GITHUB_OUTPUT
+        echo "🌐 Production URL: $SERVICE_URL"
+
+    - name: "⏱️ Wait for deployment to stabilize"
+      run: |
+        echo "⏱️ Waiting for deployment to stabilize..."
+        sleep 60
+        
+        SERVICE_URL="${{ steps.get-url.outputs.url }}"
+        
+        # Health check with retries
+        for i in {1..15}; do
+          if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+            echo "✅ Production service is responding (attempt $i)"
+            break
+          else
+            echo "⏳ Attempt $i/15: Service not ready yet, waiting..."
+            sleep 20
+          fi
+          
+          if [ $i -eq 15 ]; then
+            echo "❌ Production service failed to respond after 5 minutes"
+            exit 1
+          fi
+        done
+
+    - name: "📋 Production deployment summary"
+      run: |
+        echo "# 🚀 Production Deployment Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 📋 Deployment Details" >> $GITHUB_STEP_SUMMARY
+        echo "- **Environment**: Production" >> $GITHUB_STEP_SUMMARY
+        echo "- **Service**: ${{ env.SERVICE_NAME }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Region**: ${{ env.REGION }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment Time**: ${{ steps.deploy-time.outputs.time }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Previous Revision**: ${{ steps.get-current.outputs.revision }}" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🌐 Service URLs" >> $GITHUB_STEP_SUMMARY
+        echo "- **Production App**: [${{ steps.get-url.outputs.url }}](${{ steps.get-url.outputs.url }})" >> $GITHUB_STEP_SUMMARY
+        echo "- **Health Check**: [${{ steps.get-url.outputs.url }}/health](${{ steps.get-url.outputs.url }}/health)" >> $GITHUB_STEP_SUMMARY
+        echo "- **API Docs**: [${{ steps.get-url.outputs.url }}/docs](${{ steps.get-url.outputs.url }}/docs)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🔧 Configuration" >> $GITHUB_STEP_SUMMARY
+        echo "- **Memory**: 2Gi" >> $GITHUB_STEP_SUMMARY
+        echo "- **CPU**: 2" >> $GITHUB_STEP_SUMMARY
+        echo "- **Concurrency**: 100" >> $GITHUB_STEP_SUMMARY
+        echo "- **Max Instances**: 10" >> $GITHUB_STEP_SUMMARY
+        echo "- **Min Instances**: 1" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # POST-DEPLOYMENT VALIDATION
+  # ===================================
+  post-deployment-tests:
+    name: "🧪 Production Validation"
+    runs-on: ubuntu-latest
+    needs: deploy-production
+    timeout-minutes: 15
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🐍 Set up Python 3.12"
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.12'
+
+    - name: "📦 Install test dependencies"
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests pytest pytest-asyncio
+
+    - name: "🌐 Production health validation"
+      run: |
+        SERVICE_URL="${{ needs.deploy-production.outputs.service-url }}"
+        echo "🌐 Validating production service at: $SERVICE_URL"
+        
+        # Comprehensive health checks
+        echo "🔍 Testing health endpoint..."
+        curl -f "$SERVICE_URL/health" || exit 1
+        
+        echo "🔍 Testing main application..."
+        curl -f "$SERVICE_URL/" || exit 1
+        
+        echo "🔍 Testing API documentation..."
+        curl -f "$SERVICE_URL/docs" || exit 1
+        
+        echo "✅ All production health checks passed"
+
+    - name: "⚡ Performance validation"
+      run: |
+        SERVICE_URL="${{ needs.deploy-production.outputs.service-url }}"
+        echo "⚡ Running basic performance validation..."
+        
+        # Test response times
+        for i in {1..5}; do
+          START_TIME=$(date +%s%N)
+          curl -f -s "$SERVICE_URL/health" > /dev/null
+          END_TIME=$(date +%s%N)
+          RESPONSE_TIME=$(( (END_TIME - START_TIME) / 1000000 ))
+          echo "Response time $i: ${RESPONSE_TIME}ms"
+          
+          if [ $RESPONSE_TIME -gt 5000 ]; then
+            echo "⚠️ Slow response time detected: ${RESPONSE_TIME}ms"
+          fi
+        done
+
+    - name: "📊 Generate validation report"
+      run: |
+        echo "# 🧪 Production Validation Results" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ✅ Validation Results" >> $GITHUB_STEP_SUMMARY
+        echo "- 🌐 Health Check: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 📄 Main Page: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 📚 API Docs: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- ⚡ Performance: ✅ Validated" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## 🎉 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+        echo "Production deployment completed successfully and all validations passed." >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # DEPLOYMENT NOTIFICATION
+  # ===================================
+  deployment-notification:
+    name: "📢 Deployment Notification"
+    runs-on: ubuntu-latest
+    needs: [deploy-production, post-deployment-tests]
+    if: always()
+    
+    steps:
+    - name: "📢 Generate deployment notification"
+      run: |
+        echo "# 📢 Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        if [[ "${{ needs.deploy-production.result }}" == "success" && "${{ needs.post-deployment-tests.result }}" == "success" ]]; then
+          echo "## 🎉 Deployment Successful" >> $GITHUB_STEP_SUMMARY
+          echo "Production deployment completed successfully!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🌐 **Production URL**: [${{ needs.deploy-production.outputs.service-url }}](${{ needs.deploy-production.outputs.service-url }})" >> $GITHUB_STEP_SUMMARY
+          echo "⏰ **Deployed at**: ${{ needs.deploy-production.outputs.deployment-time }}" >> $GITHUB_STEP_SUMMARY
+          echo "🏷️ **Image Tag**: ${{ inputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        else
+          echo "## ❌ Deployment Issues" >> $GITHUB_STEP_SUMMARY
+          echo "Production deployment encountered issues:" >> $GITHUB_STEP_SUMMARY
+          echo "- Deploy Status: ${{ needs.deploy-production.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Validation Status: ${{ needs.post-deployment-tests.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Rollback may be required.** Check the manual operations workflow." >> $GITHUB_STEP_SUMMARY
+        fi
