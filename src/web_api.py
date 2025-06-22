@@ -342,29 +342,46 @@ async def conversation_websocket(websocket: WebSocket):
         websocket_manager.disconnect(connection_id)
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
-    """Initialize conversation system for frontend audio streaming"""
+    """
+    Initialize conversation system for frontend audio streaming
+
+    ARCHITECTURE NOTE: Frontend streaming mode allows browser-captured audio to be processed
+    by the backend STT service. This is essential for cloud deployments where the server
+    cannot access local microphones.
+
+    Key fixes implemented:
+    1. Proper STT service state management (not agent wrapper)
+    2. Correct audio queue access path
+    3. Enhanced error handling and debugging
+    """
     try:
         # Start the conversation system but skip backend audio recording
         session_id = conversation_system.session_id or f"frontend_session_{int(time.time())}"
 
         # Initialize STT agent for processing but don't start backend recording
         stt_agent = conversation_system.get_agent("stt")
-        if stt_agent:
-            # Prepare STT agent for frontend streaming (without starting backend audio)
-            stt_agent._is_recording = True
-            stt_agent._session_start_time = time.time()
-            stt_agent._chunk_counter = 0
-            stt_agent._segments.clear()
+        if stt_agent and hasattr(stt_agent, 'stt_service'):
+            # Use proper interface for frontend streaming initialization
+            stt_service = stt_agent.stt_service
+            init_result = stt_service.initialize_frontend_streaming()
 
-            # Start the processing thread to handle incoming audio chunks
-            if hasattr(stt_agent, '_processing_thread') and stt_agent._processing_thread is None:
-                import threading
-                stt_agent._processing_thread = threading.Thread(
-                    target=stt_agent._process_audio_chunks,
-                    daemon=True
-                )
-                stt_agent._processing_thread.start()
-                logger.info("🎵 Started STT processing thread for frontend streaming")
+            if init_result.get("success"):
+                logger.info("🎵 STT service initialized for frontend streaming")
+                logger.debug(f"🔍 Initialization result: {init_result}")
+            else:
+                logger.error(f"❌ Failed to initialize STT service for frontend streaming: {init_result.get('message')}")
+                return {
+                    "success": False,
+                    "message": f"STT initialization failed: {init_result.get('message')}",
+                    "mode": "frontend_streaming"
+                }
+        else:
+            logger.error("❌ STT agent or STT service not available for frontend streaming initialization")
+            return {
+                "success": False,
+                "message": "STT agent or service not available",
+                "mode": "frontend_streaming"
+            }
 
         return {
             "success": True,
@@ -381,7 +398,15 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
         }
 
 async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime_type: str, conversation_system: ConversationIntelligenceSystem):
-    """Process audio chunk received from frontend"""
+    """
+    Process audio chunk received from frontend
+
+    CRITICAL FIXES:
+    1. Enhanced audio format handling for WebM/MP4/WAV
+    2. Proper fallback logic that doesn't attempt raw processing on encoded formats
+    3. Correct STT service audio queue access (stt_agent.stt_service._audio_queue)
+    4. Comprehensive error handling with debugging information
+    """
     try:
         import base64
         import io
@@ -394,8 +419,20 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         try:
             from pydub import AudioSegment
 
-            # Convert audio to the format expected by the speech agent
-            audio_segment = AudioSegment.from_file(io.BytesIO(audio_bytes))
+            # Create a temporary file-like object with proper format detection
+            audio_io = io.BytesIO(audio_bytes)
+
+            # Try to detect format from mime_type and process accordingly
+            if 'webm' in mime_type.lower():
+                # WebM format - specify format explicitly for pydub
+                audio_segment = AudioSegment.from_file(audio_io, format="webm")
+            elif 'mp4' in mime_type.lower():
+                audio_segment = AudioSegment.from_file(audio_io, format="mp4")
+            elif 'wav' in mime_type.lower():
+                audio_segment = AudioSegment.from_file(audio_io, format="wav")
+            else:
+                # Try auto-detection
+                audio_segment = AudioSegment.from_file(audio_io)
 
             # Convert to mono 16kHz (required for speech recognition)
             audio_segment = audio_segment.set_channels(1).set_frame_rate(16000)
@@ -404,41 +441,94 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
             audio_array = np.array(audio_segment.get_array_of_samples(), dtype=np.float32)
             audio_array = audio_array / 32768.0  # Normalize from int16 to float32
 
-            logger.debug(f"📡 Processed audio chunk with pydub: {len(audio_array)} samples")
+            logger.debug(f"📡 Processed audio chunk with pydub ({mime_type}): {len(audio_array)} samples")
 
         except Exception as pydub_error:
-            logger.warning(f"⚠️ pydub processing failed (ffmpeg missing?): {pydub_error}")
+            logger.warning(f"⚠️ pydub processing failed for {mime_type}: {pydub_error}")
 
-            # Fallback: Try to process raw audio data directly
-            # This is a simplified approach for when ffmpeg is not available
+            # Enhanced fallback: Skip raw processing for encoded formats
+            if any(fmt in mime_type.lower() for fmt in ['webm', 'mp4', 'ogg']):
+                logger.error(f"❌ Cannot process encoded format {mime_type} without pydub/ffmpeg")
+                raise Exception(f"Audio format {mime_type} requires ffmpeg for processing. Raw fallback not applicable for encoded formats.")
+
+            # Fallback only for raw/uncompressed formats
             try:
-                # Assume the audio is already in a reasonable format
-                # Convert bytes to numpy array (this is a basic fallback)
-                audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
-                audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+                # Only attempt raw processing for potentially uncompressed data
+                logger.info(f"🔄 Attempting raw audio processing for {mime_type}")
 
-                logger.info(f"📡 Processed audio chunk with fallback method: {len(audio_array)} samples")
+                # Try different raw formats
+                if len(audio_bytes) % 2 == 0:  # Could be int16
+                    audio_array = np.frombuffer(audio_bytes, dtype=np.int16).astype(np.float32)
+                    audio_array = audio_array / 32768.0  # Normalize from int16 to float32
+                elif len(audio_bytes) % 4 == 0:  # Could be float32
+                    audio_array = np.frombuffer(audio_bytes, dtype=np.float32)
+                    # Ensure normalized range
+                    if np.max(np.abs(audio_array)) > 1.0:
+                        audio_array = audio_array / 32768.0
+                else:
+                    raise ValueError(f"Audio data length {len(audio_bytes)} not compatible with standard formats")
+
+                logger.info(f"📡 Processed audio chunk with raw fallback: {len(audio_array)} samples")
 
             except Exception as fallback_error:
                 logger.error(f"❌ Both pydub and fallback audio processing failed: {fallback_error}")
-                raise Exception(f"Audio processing unavailable - ffmpeg required for pydub. Install ffmpeg in container.")
+                raise Exception(f"Audio processing failed for {mime_type}. Ensure ffmpeg is properly installed and configured.")
 
-        # Get the STT agent and process the audio chunk
+        # Get the STT agent and process the audio chunk using proper interface
         stt_agent = conversation_system.get_agent("stt")
-        if stt_agent and hasattr(stt_agent, '_audio_queue'):
-            # Add the audio chunk to the processing queue
-            stt_agent._audio_queue.put(audio_array)
-            logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
+        if stt_agent and hasattr(stt_agent, 'stt_service'):
+            # Use proper interface for queuing audio chunks
+            stt_service = stt_agent.stt_service
+            if hasattr(stt_service, 'queue_audio_chunk'):
+                success = stt_service.queue_audio_chunk(audio_array)
+                if success:
+                    logger.debug(f"📡 Audio chunk queued for STT processing: {len(audio_array)} samples")
+                else:
+                    logger.warning("⚠️ Failed to queue audio chunk - service may not be recording")
+            else:
+                # Fallback to direct access if interface not available
+                if hasattr(stt_service, '_audio_queue'):
+                    stt_service._audio_queue.put(audio_array)
+                    logger.debug(f"📡 Audio chunk queued (fallback method): {len(audio_array)} samples")
+                else:
+                    logger.error("❌ No audio queue interface available")
         else:
-            logger.warning("⚠️ STT agent not available for frontend audio processing")
+            logger.warning("⚠️ STT agent or STT service not available for frontend audio processing")
+            if stt_agent:
+                logger.debug(f"🔍 STT agent available: {stt_agent is not None}")
+                logger.debug(f"🔍 STT service available: {hasattr(stt_agent, 'stt_service')}")
+                if hasattr(stt_agent, 'stt_service'):
+                    logger.debug(f"🔍 Queue interface available: {hasattr(stt_agent.stt_service, 'queue_audio_chunk')}")
 
     except Exception as e:
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
-        await websocket_manager.send_to_connection(connection_id, {
+
+        # Enhanced error response with debugging information
+        error_response = {
             "type": "error",
-            "message": f"Audio processing error: {str(e)}. Please try Demo Mode or check server configuration.",
-            "timestamp": datetime.now().isoformat()
-        })
+            "message": f"Audio processing error: {str(e)}",
+            "timestamp": datetime.now().isoformat(),
+            "debug_info": {
+                "connection_id": connection_id,
+                "mime_type": mime_type,
+                "audio_data_length": len(audio_data) if audio_data else 0,
+                "error_type": type(e).__name__,
+                "suggestions": []
+            }
+        }
+
+        # Add specific suggestions based on error type
+        if "ffmpeg" in str(e).lower():
+            error_response["debug_info"]["suggestions"].append("Try Demo Mode - it works without microphone access")
+            error_response["debug_info"]["suggestions"].append("Audio processing requires ffmpeg for WebM format")
+        elif "audio_queue" in str(e).lower():
+            error_response["debug_info"]["suggestions"].append("STT service may not be properly initialized")
+            error_response["debug_info"]["suggestions"].append("Try refreshing the page and starting recording again")
+        elif "buffer size" in str(e).lower():
+            error_response["debug_info"]["suggestions"].append("Audio format incompatibility detected")
+            error_response["debug_info"]["suggestions"].append("Try using a different browser or Demo Mode")
+
+        await websocket_manager.send_to_connection(connection_id, error_response)
 
 async def handle_websocket_command(connection_id: str, command: Dict[str, Any], conversation_system: ConversationIntelligenceSystem):
     """Handle WebSocket commands from frontend"""
@@ -460,15 +550,49 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
                 # Backend microphone mode (fallback)
                 result = conversation_system.start_conversation()
 
-            await websocket_manager.send_to_connection(connection_id, {
+            # Enhanced response with debugging information and cloud mode detection
+            from src.speech_agent import AUDIO_AVAILABLE, CLOUD_RUN_MODE
+
+            response_data = {
                 "type": "recording_started",
                 "success": result.get("success"),
                 "message": result.get("message"),
                 "browser": browser,
                 "mode": mode,
                 "streaming": streaming,
-                "timestamp": datetime.now().isoformat()
-            })
+                "timestamp": datetime.now().isoformat(),
+                # CRITICAL: Add cloud mode flags for frontend environment detection
+                "environment": {
+                    "cloud_run_mode": CLOUD_RUN_MODE,
+                    "audio_available": AUDIO_AVAILABLE,
+                    "mock_mode": result.get("mock_mode", False),
+                    "recommended_mode": "frontend_streaming" if CLOUD_RUN_MODE else "backend"
+                }
+            }
+
+            # Add debugging information for frontend streaming mode
+            if mode == "frontend_streaming":
+                stt_agent = conversation_system.get_agent("stt")
+                if stt_agent and hasattr(stt_agent, 'stt_service'):
+                    stt_service = stt_agent.stt_service
+                    response_data.update({
+                        "debug_info": {
+                            "stt_service_available": True,
+                            "audio_queue_available": hasattr(stt_service, '_audio_queue'),
+                            "processing_thread_active": hasattr(stt_service, '_processing_thread') and
+                                                      stt_service._processing_thread is not None,
+                            "is_recording": getattr(stt_service, '_is_recording', False)
+                        }
+                    })
+                else:
+                    response_data.update({
+                        "debug_info": {
+                            "stt_service_available": False,
+                            "error": "STT agent or service not properly initialized"
+                        }
+                    })
+
+            await websocket_manager.send_to_connection(connection_id, response_data)
 
             if result.get("success"):
                 await websocket_manager.broadcast_system_status(
