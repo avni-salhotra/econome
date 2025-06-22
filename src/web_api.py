@@ -291,18 +291,31 @@ async def conversation_websocket(websocket: WebSocket):
                 }
                 logger.debug(f"📝 DEBUG_TRANSCRIPT_CALLBACK: {transcript_debug}")
                 
-                asyncio.create_task(websocket_manager.send_to_connection(
-                    connection_id,
-                    {
-                        "type": "live_transcript",
-                        "text": segment.text,
-                        "speaker_id": segment.speaker_id,
-                        "confidence": segment.confidence,
-                        "is_final": segment.is_final,
-                        "timestamp": segment.timestamp.isoformat(),
-                        "chunk_id": segment.chunk_id
-                    }
-                ))
+                # 🚨 CRITICAL FIX: Use asyncio.run_coroutine_threadsafe for thread-safe async calls
+                # The STT service calls this from a background thread, so we need to schedule
+                # the coroutine in the main event loop
+                try:
+                    loop = asyncio.get_running_loop()
+                    asyncio.run_coroutine_threadsafe(
+                        websocket_manager.send_to_connection(
+                            connection_id,
+                            {
+                                "type": "live_transcript",
+                                "text": segment.text,
+                                "speaker_id": segment.speaker_id,
+                                "confidence": segment.confidence,
+                                "is_final": segment.is_final,
+                                "timestamp": segment.timestamp.isoformat(),
+                                "chunk_id": segment.chunk_id
+                            }
+                        ),
+                        loop
+                    )
+                    logger.info(f"✅ Transcript sent to WebSocket: {segment.text[:50]}...")
+                except RuntimeError as re:
+                    # If no event loop is running, we can't send the transcript
+                    logger.warning(f"⚠️ No event loop available for transcript callback: {re}")
+                    logger.info(f"📝 Transcript (not sent): {segment.text}")
             except Exception as e:
                 logger.error(f"❌ Error in transcript callback: {e}")
         
