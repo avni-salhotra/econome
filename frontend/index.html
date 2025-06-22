@@ -381,11 +381,23 @@ Would you like to try Demo Mode instead?`;
 
                     case 'recording_started':
                         if (data.success) {
-                            this.updateStatus('recording', 'Recording - Speak clearly');
+                            // Check if we're in mock mode (Cloud Run environment)
+                            const isMockMode = data.mock_mode || data.cloud_run_mode;
+                            const statusText = isMockMode ? 'Mock Recording (Cloud Run)' : 'Recording - Speak clearly';
+                            const transcriptText = isMockMode ?
+                                '🌐 Cloud Run Mode: Simulating live transcription... (Real microphone recording not available in server environment)' :
+                                'Listening... speak clearly and naturally';
+
+                            this.updateStatus('recording', statusText);
                             this.startBtn.disabled = true;
                             this.stopBtn.disabled = false;
                             this.liveTranscript = '';
-                            this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">Listening... speak clearly and naturally</div>';
+                            this.liveTranscriptEl.innerHTML = `<div class="text-gray-500 italic">${transcriptText}</div>`;
+
+                            // Show info about mock mode if applicable
+                            if (isMockMode) {
+                                console.log('🌐 Running in Cloud Run mock mode - simulating transcription');
+                            }
                         }
                         break;
 

@@ -24,12 +24,46 @@ from google.oauth2 import service_account
 # Optional audio imports for CI compatibility
 try:
     import sounddevice as sd
-    AUDIO_AVAILABLE = True
+
+    # Check if we're in a Cloud Run environment (no audio devices)
+    def _detect_cloud_run_environment():
+        """Detect if running in Cloud Run or similar containerized environment without audio"""
+        # Check for Cloud Run environment variables
+        if os.getenv('K_SERVICE') or os.getenv('K_REVISION') or os.getenv('K_CONFIGURATION'):
+            return True
+
+        # Check for container environment without audio devices
+        try:
+            # Try to query audio devices - if this fails, we're in a headless environment
+            devices = sd.query_devices()
+            if len(devices) == 0:
+                return True
+
+            # Try to get default input device - if this fails, no microphone available
+            default_input = sd.query_devices(kind='input')
+            return False  # Audio devices found
+
+        except Exception as e:
+            # Any error querying devices means we're in a headless environment
+            print(f"🔍 Audio device query failed: {e}")
+            return True
+
+    # Determine if audio is actually available
+    if _detect_cloud_run_environment():
+        print("🌐 Cloud Run environment detected - using mock audio mode")
+        AUDIO_AVAILABLE = False
+        CLOUD_RUN_MODE = True
+    else:
+        print("🎤 Local environment with audio devices detected")
+        AUDIO_AVAILABLE = True
+        CLOUD_RUN_MODE = False
+
 except (ImportError, OSError) as e:
     print(f"⚠️ Audio library not available: {e}")
     print("🔧 Running in audio-disabled mode (suitable for CI/testing)")
     sd = None
     AUDIO_AVAILABLE = False
+    CLOUD_RUN_MODE = False
 
 @dataclass
 class TranscriptSegment:
@@ -381,7 +415,8 @@ class ProductionSTTServiceV2:
 
         # Check if audio is available
         if not AUDIO_AVAILABLE:
-            print("🎤 Starting mock recording (audio not available)...")
+            mode_reason = "Cloud Run environment" if CLOUD_RUN_MODE else "audio not available"
+            print(f"🎤 Starting mock recording ({mode_reason})...")
             self._is_recording = True
             self._session_start_time = time.time()
             self._chunk_counter = 0
@@ -396,12 +431,13 @@ class ProductionSTTServiceV2:
 
             return {
                 "success": True,
-                "message": "Mock recording started (audio not available)",
+                "message": f"Mock recording started ({mode_reason})",
                 "is_recording": True,
                 "sample_rate": self.sample_rate,
                 "chunk_duration": self.chunk_duration,
                 "has_credentials": self._has_credentials,
-                "mock_mode": True
+                "mock_mode": True,
+                "cloud_run_mode": CLOUD_RUN_MODE
             }
 
         try:
