@@ -131,6 +131,11 @@ class ProductionSTTServiceV2:
         self.queue_warning_threshold = 8  # Warn when queue is 80% full
         self.queue_cleanup_interval = 30  # Clean up old chunks every 30 seconds
 
+        # 🔧 CRITICAL FIX: Initialize callbacks BEFORE speech client to prevent attribute errors
+        self._transcript_callback = None
+        self._error_callback = None
+        self._status_callback = None
+
         self._initialize_speech_client(credentials_path)
 
         self._audio_queue = queue.Queue(maxsize=self.max_queue_size)
@@ -162,10 +167,6 @@ class ProductionSTTServiceV2:
         self._last_heartbeat = time.time()
         self.heartbeat_interval = 30.0  # seconds
         self._thread_health_alerts = []
-
-        self._transcript_callback = None
-        self._error_callback = None
-        self._status_callback = None
 
         print(f"✅ ProductionSTTServiceV2 initialized with STREAMING recognition (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
@@ -226,7 +227,12 @@ class ProductionSTTServiceV2:
             return
             
         try:
-            # 🎯 CRITICAL: Proper Speech V2 streaming configuration
+            # 🎯 CRITICAL: Proper Speech V2 streaming configuration with validation
+            language_codes = ["en-US"]  # Ensure this is never empty
+            
+            if not language_codes or len(language_codes) == 0:
+                raise ValueError("language_codes cannot be empty")
+            
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
                 config=speech_v2.RecognitionConfig(
                     explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
@@ -234,7 +240,7 @@ class ProductionSTTServiceV2:
                         sample_rate_hertz=self.sample_rate,
                         audio_channel_count=1,
                     ),
-                    language_codes=["en-US"],  # V2 uses language_codes (plural)
+                    language_codes=language_codes,  # V2 uses language_codes (plural) - VALIDATED
                     model="latest_long",
                     features=speech_v2.RecognitionFeatures(
                         enable_automatic_punctuation=True,
@@ -247,11 +253,16 @@ class ProductionSTTServiceV2:
                 )
             )
             
-            print("✅ Streaming recognition configuration initialized")
+            # Validate the configuration
+            if not self._streaming_config.config.language_codes:
+                raise ValueError("Streaming config language_codes is empty after initialization")
+            
+            print(f"✅ Streaming recognition configuration initialized with language_codes: {self._streaming_config.config.language_codes}")
             
         except Exception as e:
             print(f"❌ Failed to initialize streaming config: {e}")
-            if self._error_callback:
+            self._streaming_config = None
+            if hasattr(self, '_error_callback') and self._error_callback:
                 self._error_callback("streaming_config_init", e)
     
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
