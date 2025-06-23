@@ -335,128 +335,73 @@ class ProductionSTTServiceV2:
             except queue.Full:
                 self._handle_error("audio_queue_full", "Audio queue is full, dropping audio chunk.")
 
-    def _process_audio_chunks(self) -> None:
-        """
-        Processes audio chunks from the queue for the lifetime of a single
-        streaming session. Exits when a stream restart is needed or when stopped.
-        """
-        while not self._restart_stream_event.is_set() and not self._stop_event.is_set():
-            try:
-                # Check for stream timeout
-                if self._should_restart_stream():
-                    print("🔄 Stream time limit reached, signaling restart.")
-                    self._restart_stream_event.set()
-                    continue
-
-                self._send_audio_to_stream()
-                self._log_thread_heartbeat()
-
-            except Exception as e:
-                self._handle_error("process_audio_chunks_error", e)
-                self._restart_stream_event.set() # Signal restart on error
-
     def _start_streaming_recognition(self) -> None:
-        """Manages the lifecycle of streaming recognition sessions."""
-        self._stop_event.clear()
-        self._stream_restart_count = 0
-
+        """
+        Manages the lifecycle of streaming recognition sessions. This is the
+        main loop for the master thread.
+        """
         while not self._stop_event.is_set():
-            self._restart_stream_event.clear()
+            if not self._has_credentials:
+                self._run_mock_mode()
+                break # Exit after mock mode finishes
+
+            print("🚀 Starting new streaming session...")
+            self._report_status()
             
-            # Create a new session
-            if not self._create_streaming_session():
-                self._handle_error("stream_creation_failed", "Could not create streaming session.")
-                break
-
-            # Each session gets its own processing thread
-            session_thread = threading.Thread(target=self._process_audio_chunks)
-            session_thread.start()
-            session_thread.join() # Wait for the session to end (restart or stop)
-
-            if self._stop_event.is_set():
-                print("🛑 Stop event received, terminating streaming recognition.")
-                break
+            # Each session gets its own response processing thread
+            response_thread = threading.Thread(target=self._process_streaming_responses, daemon=True)
             
-            # If we are here, it means a restart was triggered
-            print("🔄 Restarting streaming session...")
-            self._stream_restart_count += 1
-            self._last_stream_restart = time.time()
-            # The loop will now create a new session
-
-        print("✅ Streaming recognition fully terminated.")
-
-    def _create_streaming_session(self) -> bool:
-        """
-        Initializes a new streaming recognition client and starts the
-        response processing thread.
-        """
-        with self._stream_lock:
             try:
-                print("🚀 Creating new streaming session...")
-                if not self._has_credentials:
-                    print("⚠️ Mock mode: skipping stream creation.")
-                    return True # In mock mode, we can proceed
-
-                # Generate the streaming requests
-                requests = self._audio_chunk_generator()
-                
-                # Get the streaming client
-                self._streaming_client = self.speech_client.streaming_recognize(
-                    requests=requests,
-                    config=self._streaming_config
+                # Setup the stream with the audio generator
+                # The first request must be a config message
+                config_request = speech_v2.StreamingRecognizeRequest(
+                    recognizer=self.recognizer,
+                    streaming_config=self._streaming_config
                 )
-                self._stream_active = True
-                self._stream_start_time = time.time()
                 
-                # Start a thread to process responses from this stream
-                self._response_thread = threading.Thread(target=self._process_streaming_responses)
-                self._response_thread.start()
-                
-                print(f"✅ Streaming session #{self._stream_restart_count + 1} created successfully")
-                return True
+                audio_generator = self._audio_chunk_generator()
+
+                def request_generator():
+                    yield config_request
+                    yield from audio_generator
+
+                # The streaming client is a generator that yields responses
+                self._streaming_client = self.speech_client.streaming_recognize(
+                    requests=request_generator()
+                )
+
+                response_thread.start()
+                response_thread.join() # This will block until the stream ends or is stopped
 
             except Exception as e:
-                self._handle_error("create_stream_error", e)
-                self._stream_active = False
-                return False
+                self._handle_error("stream_error", f"Streaming recognition failed: {e}")
+                time.sleep(1) # Wait before retrying
+            
+            finally:
+                if not self._stop_event.is_set():
+                    print("🔄 Stream ended. Will restart if recording is still active.")
+        
+        print("🛑 Master thread exiting.")
 
     def _audio_chunk_generator(self):
         """
-        A generator that yields audio chunks from the queue.
-        This is the main input to the Google Cloud Speech API.
+        Yields audio chunks from the queue. This is a generator function
+        that runs until the stream is stopped or times out.
         """
-        # First request must be the config
-        yield speech_v2.StreamingRecognizeRequest(recognizer=self.recognizer)
-        
-        print("🎧 Starting audio chunk generator...")
+        stream_start_time = time.time()
+        stream_duration_limit = self._stream_duration_limit
 
-        while self._is_recording and not self._restart_stream_event.is_set() and not self._stop_event.is_set():
-            try:
-                # Use a timeout to allow the loop to check for stop/restart events
-                chunk = self._audio_queue.get(timeout=0.1)
-                
-                # Convert float32 to int16 for LINEAR16 encoding
-                if chunk.dtype == np.float32:
-                    chunk = (chunk * 32767).astype(np.int16)
-                
-                yield speech_v2.StreamingRecognizeRequest(audio=chunk.tobytes())
-                
-                # Latency diagnostic
-                current_ts = time.time()
-                if self._prev_chunk_ts:
-                    latency = (current_ts - self._prev_chunk_ts) * 1000
-                    if latency > 200: # If latency is > 200ms
-                         print(f"🕒 High audio chunk latency: {latency:.2f} ms")
-                self._prev_chunk_ts = current_ts
-
-            except queue.Empty:
-                # This is normal, just means no audio was available in the last 0.1s
-                continue
-            except Exception as e:
-                print(f"❌ Error in audio chunk generator: {e}")
-                self._handle_error("audio_generator_error", e)
+        while not self._stop_event.is_set():
+            if time.time() - stream_start_time > stream_duration_limit:
+                print("⏰ Stream time limit reached. Ending current stream.")
                 break
-        
+            
+            try:
+                chunk = self._audio_queue.get(timeout=0.1)
+                yield speech_v2.StreamingRecognizeRequest(audio=chunk)
+            except queue.Empty:
+                continue
+
         print("🚪 Audio chunk generator finished.")
 
 
@@ -467,292 +412,101 @@ class ProductionSTTServiceV2:
         """
         print("🎧 Starting streaming response processing...")
         if not self._streaming_client:
-            print("⚠️ No streaming client available for response processing.")
             return
 
         try:
             for response in self._streaming_client:
+                if self._stop_event.is_set():
+                    break
                 self._handle_streaming_response(response)
         except Exception as e:
-            # Check if this is an expected "stream closed" error or something else
-            if "RST_STREAM" in str(e) or "channel closed" in str(e):
-                print("🚪 Stream closed normally.")
-            else:
-                self._handle_error("streaming_response_error", e)
+            if not self._stop_event.is_set():
+                self._handle_error("response_error", f"Error processing stream responses: {e}")
         finally:
             with self._stream_lock:
                 self._stream_active = False
-            print("🏁 Streaming response processing finished")
+            print("🛑 Response processing thread finished.")
 
-    def _handle_streaming_response(self, response: speech_v2.StreamingRecognizeResponse) -> None:
-        """Handles a single response from the Speech API."""
+
+    def _handle_streaming_response(self, response: speech_v2.StreamingRecognizeResponse):
+        """Parses a single response from the Speech API."""
         if not response.results:
             return
 
         for result in response.results:
             if not result.alternatives:
                 continue
-            
-            transcript_text = result.alternatives[0].transcript
-            confidence = result.alternatives[0].confidence
-            
-            # Filter out empty or whitespace-only transcripts
-            if not transcript_text.strip():
-                continue
 
-            # Log raw event for debugging
-            print(f"🎤 Raw STT Event: is_final={result.is_final}, text='{transcript_text}'")
-
-            # Create a structured segment
+            alt = result.alternatives[0]
             segment = TranscriptSegment(
-                text=transcript_text,
-                speaker_id="speaker_0", # Diarization not implemented in this version
-                confidence=confidence,
-                timestamp=datetime.now(),
+                text=alt.transcript,
                 is_final=result.is_final,
+                confidence=alt.confidence,
+                timestamp=datetime.now(),
+                speaker_id="speaker_0",
                 chunk_id=self._chunk_counter
             )
-            
-            # Fire callback and append to internal log
+
             if self._transcript_callback:
-                try:
-                    self._transcript_callback(segment)
-                except Exception as e:
-                    self._handle_error("transcript_callback_error", e)
+                self._transcript_callback(segment)
 
             # Only add final segments to the persistent transcript log
             if result.is_final:
                 self._segments.append(segment)
 
-    def _should_restart_stream(self) -> bool:
-        """Check if the stream has been active for too long."""
-        if not self._stream_start_time:
-            return False
-        
-        elapsed = time.time() - self._stream_start_time
-        return elapsed > self._stream_duration_limit
-
-    def _restart_streaming_session(self) -> None:
-        """DEPRECATED: This logic is now handled by the main recognition loop."""
-        # This method is kept for backward compatibility but should not be used.
-        # The new design handles this in _start_streaming_recognition.
-        print("⚠️ _restart_streaming_session is deprecated.")
-        self._restart_stream_event.set()
-
-
-    def _send_audio_to_stream(self) -> None:
-        """DEPRECATED: This logic is now handled by the _audio_chunk_generator."""
-        # This method is kept for backward compatibility but should not be used.
-        pass
-
-    def _mock_audio_processing(self) -> None:
-        """Mock audio processing for CI environments without audio hardware"""
-        print("🔄 Mock audio processing thread started")
-        while self._is_recording:
-            try:
-                # Simulate audio chunk processing every 2 seconds
-                time.sleep(2.0)
-
-                if not self._is_recording:
-                    break
-
-                # Generate mock transcript
-                self._chunk_counter += 1
-                self._generate_mock_transcript()
-
-            except Exception as e:
-                print(f"❌ Mock audio processing error: {e}")
-                if self._error_callback:
-                    self._error_callback("mock_audio_processing", e)
-
-        print("🏁 Mock audio processing thread finished")
-
-    # 🚨 REMOVED: _transcribe_chunk and _process_speech_response methods
-    # These have been replaced with proper streaming recognition:
-    # - _handle_streaming_response() now processes streaming responses
-    # - _audio_chunk_generator() sends audio chunks to streaming API
-    # - No more synchronous per-chunk API calls
-    
-    def _generate_mock_transcript(self) -> None:
-        """Generate mock transcript for development"""
-        mock_phrases = [
-            "We need to review the project timeline",
-            "The budget allocation looks good for Q2",
-            "Let's schedule a follow-up meeting next week",
-            "Sarah will coordinate with the design team",
-            "The client feedback has been very positive",
-            "We should finalize the proposal by Friday"
+    def _run_mock_mode(self):
+        """Runs a mock transcription session when credentials are not available."""
+        print("🎭 Running in mock mode.")
+        mock_transcript = [
+            ("Hello, this is a test.", True, 0.95),
+            ("We are testing the mock functionality.", True, 0.98),
+            ("This ensures the system works without credentials.", False, 0.90),
+            ("System is fully operational.", True, 0.99),
         ]
-        
-        import random
-        text = random.choice(mock_phrases)
-        speaker_id = f"Speaker_{(self._chunk_counter % 2) + 1}"
-        
-        segment = TranscriptSegment(
-            text=text,
-            speaker_id=speaker_id,
-            confidence=0.95,
-            timestamp=datetime.now(),
-            is_final=True,
-            chunk_id=self._chunk_counter,
-            language_code="en-US"
-        )
-        
-        self._segments.append(segment)
-        
-        if self._transcript_callback:
-            self._transcript_callback(segment)
-        
-        print(f"🎭 [MOCK] {speaker_id}: {text}")
-    
+        for text, is_final, confidence in mock_transcript:
+            if self._stop_event.is_set(): break
+            time.sleep(1.5)
+            segment = TranscriptSegment(text=text, is_final=is_final, confidence=confidence, timestamp=datetime.now())
+            if self._transcript_callback:
+                self._transcript_callback(segment)
+        print("🎭 Mock mode finished.")
+
     def start_recording(self) -> Dict[str, Any]:
         if self._is_recording:
-            return {
-                "success": False,
-                "message": "Already recording",
-                "is_recording": True
-            }
+            return {"status": "already_recording", "message": "Recording is already in progress."}
 
-        # Check if audio is available
-        if not AUDIO_AVAILABLE:
-            mode_reason = "Cloud Run environment" if CLOUD_RUN_MODE else "audio not available"
-            print(f"🎤 Starting mock recording ({mode_reason})...")
-            self._is_recording = True
-            self._session_start_time = time.time()
-            self._chunk_counter = 0
-            self._segments.clear()
-
-            # Start mock processing thread
-            self._processing_thread = threading.Thread(
-                target=self._mock_audio_processing,
-                daemon=True
-            )
-            self._processing_thread.start()
-
-            return {
-                "success": True,
-                "message": f"Mock recording started ({mode_reason})",
-                "is_recording": True,
-                "sample_rate": self.sample_rate,
-                "chunk_duration": self.chunk_duration,
-                "has_credentials": self._has_credentials,
-                "mock_mode": True,
-                "cloud_run_mode": CLOUD_RUN_MODE
-            }
-
-        try:
-            print("🎤 Starting live audio recording...")
-            self._clear_audio_buffers()
-
-            self._chunk_counter = 0
-            self._segments.clear()
-
-            while not self._audio_queue.empty():
-                try:
-                    self._audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-
-            self._is_recording = True
-            self._session_start_time = time.time()
-
-            self._audio_stream = sd.InputStream(
-                samplerate=self.sample_rate,
-                channels=self.channels,
-                dtype=self.dtype,
-                callback=self._audio_callback,
-                blocksize=self.chunk_size,
-                latency='low'
-            )
-            self._audio_stream.start()
-
-            self._processing_thread = threading.Thread(
-                target=self._start_streaming_recognition,
-                daemon=True
-            )
-            self._processing_thread.start()
-
-            print("✅ Recording started successfully")
-            return {
-                "success": True,
-                "message": "Recording started",
-                "is_recording": True,
-                "sample_rate": self.sample_rate,
-                "chunk_duration": self.chunk_duration,
-                "has_credentials": self._has_credentials,
-                "timestamp": datetime.now().isoformat()
-            }
-        except Exception as e:
-            self._is_recording = False
-            error_msg = f"Failed to start recording: {e}"
-            print(f"❌ {error_msg}")
-            # TEMPORARILY DISABLED: Error callback to fix async issues
-            # if self._error_callback:
-            #     self._error_callback("start_recording", e)
-            print(f"⚠️ Start recording error logged: {e}")
-            return {
-                "success": False,
-                "message": error_msg,
-                "is_recording": False
-            }
-    
-    def stop_recording(self) -> Dict[str, Any]:
-        """Stops the recording and transcription session."""
-        print("🛑 Stopping recording...")
-        
-        if not self._is_recording:
-            print("⚠️ Recording already stopped.")
-            return {"status": "already_stopped"}
-
-        # Signal all loops to stop
-        self._stop_event.set()
-        self._is_recording = False
-
-        # Stop the audio input stream
-        if AUDIO_AVAILABLE and hasattr(self, '_audio_stream'):
-            try:
-                self._audio_stream.stop()
-                self._audio_stream.close()
-                print("🔇 Audio stream stopped")
-            except Exception as e:
-                print(f"⚠️ Error stopping audio stream: {e}")
-        elif not AUDIO_AVAILABLE:
-            print("🔇 Mock audio processing stopped")
-
-        # Ensure the response thread is also joined if it exists and is alive
-        if hasattr(self, '_response_thread') and self._response_thread and self._response_thread.is_alive():
-             self._response_thread.join(timeout=2.0)
-
-        # Final cleanup
-        with self._stream_lock:
-            if self._stream_active:
-                print("🔄 Forcing streaming session shutdown after grace period")
-                self._stream_active = False
-
-        # Wait for processing thread to finish
-        if self._processing_thread and self._processing_thread.is_alive():
-            print("⏳ Waiting for processing thread to terminate...")
-            self._processing_thread.join(timeout=5.0)
-            if self._processing_thread.is_alive():
-                print("⚠️ Processing thread did not terminate in time.")
-        
-        # Clear any remaining audio buffers
+        self._is_recording = True
+        self._session_start_time = time.time()
+        self._stop_event.clear()
         self._clear_audio_buffers()
 
-        session_duration = time.time() - self._session_start_time if self._session_start_time else 0
-        final_transcript = self._generate_final_transcript()
+        # The master thread manages the streaming lifecycle
+        self._master_thread = threading.Thread(target=self._start_streaming_recognition, daemon=True)
+        self._master_thread.start()
 
-        print("✅ Recording stopped successfully")
-        return {
-            "success": True,
-            "message": "Recording stopped",
-            "is_recording": False,
-            "session_duration": session_duration,
-            "chunks_processed": self._chunk_counter,
-            "segments_captured": len(self._segments),
-            "speakers_detected": len(self._get_unique_speakers()),
-            "final_transcript": final_transcript
-        }
+        print("🎤 Recording started. Master thread launched.")
+        self._report_status()
+        return {"status": "recording_started", "session_start_time": datetime.utcnow().isoformat()}
+
+    def stop_recording(self) -> Dict[str, Any]:
+        if not self._is_recording:
+            return {"status": "not_recording", "message": "Recording is not in progress."}
+
+        print("⏹️ Stopping recording...")
+        self._stop_event.set() # Signal all threads to stop
+
+        # Wait for the master thread to finish
+        if self._master_thread and self._master_thread.is_alive():
+            self._master_thread.join(timeout=5.0)
+            if self._master_thread.is_alive():
+                self._handle_error("shutdown_timeout", "Master thread did not terminate in time.")
+
+        self._is_recording = False
+        duration = time.time() - self._session_start_time if self._session_start_time else 0
+        print(f"✅ Recording stopped after {duration:.2f} seconds.")
+
+        self._report_status()
+        return {"status": "recording_stopped", "duration": duration}
 
     def _clear_audio_buffers(self):
         try:
