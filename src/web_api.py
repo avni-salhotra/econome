@@ -977,7 +977,7 @@ async def handle_http_command(connection_id: str, command: Dict[str, Any], conve
     """Handle HTTP commands from frontend"""
     action = command.get("action")
 
-    # 🔍 CRITICAL DEBUG: Command handling entry point
+    # Debug: Command handling entry point
     command_debug = {
         "timestamp": datetime.now().isoformat(),
         "connection_id": connection_id,
@@ -986,7 +986,7 @@ async def handle_http_command(connection_id: str, command: Dict[str, Any], conve
         "has_audio_data": "audio_data" in command,
         "audio_data_length": len(command.get("audio_data", "")) if "audio_data" in command else 0
     }
-            logger.info(f"🔧 DEBUG_HTTP_COMMAND: {command_debug}")
+    logger.info(f"🔧 DEBUG_HTTP_COMMAND: {command_debug}")
 
     try:
         if action == "start_recording":
