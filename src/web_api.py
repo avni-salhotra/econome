@@ -19,6 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
+import traceback
+from starlette.middleware.base import BaseHTTPMiddleware
 
 # Import our existing system components
 from .meeting_agents import ConversationIntelligenceSystem
@@ -83,6 +85,20 @@ active_conversations: Dict[str, ConversationIntelligenceSystem] = {}
 MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB prevents abuse / accidental huge chunks
 # Back-pressure threshold (fraction of queue capacity)
 QUEUE_BACKPRESSURE_THRESHOLD = 0.9
+
+# Add exception logging middleware
+class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        try:
+            return await call_next(request)
+        except Exception as e:
+            logger.error(f"Unhandled exception: {e}\\n{traceback.format_exc()}")
+            return JSONResponse(
+                status_code=500,
+                content={"message": "An internal server error occurred."}
+            )
+
+app.add_middleware(ExceptionLoggingMiddleware)
 
 @app.on_event("startup")
 async def startup_event():
