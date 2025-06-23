@@ -1174,6 +1174,8 @@ class MockSTTService:
     def __init__(self, **kwargs):
         self._is_recording = False
         self._transcript_callback = None
+        self._chunk_counter = 0
+        self._segments = []
         print("✅ MockSTTService initialized")
     
     def set_transcript_callback(self, callback):
@@ -1187,6 +1189,8 @@ class MockSTTService:
     
     def start_recording(self):
         self._is_recording = True
+        self._chunk_counter = 0
+        self._segments = []
         return {"success": True, "message": "Mock recording started", "is_recording": True}
     
     def stop_recording(self):
@@ -1196,6 +1200,8 @@ class MockSTTService:
     def initialize_frontend_streaming(self):
         """Initialize frontend streaming for mock mode"""
         self._is_recording = True
+        self._chunk_counter = 0
+        self._segments = []
         return {
             "success": True,
             "message": "Mock frontend streaming initialized",
@@ -1205,24 +1211,73 @@ class MockSTTService:
         }
     
     def queue_audio_chunk(self, audio_array):
-        """Mock audio chunk queuing"""
+        """Mock audio chunk queuing - generates mock transcripts"""
+        if not self._is_recording:
+            return False
+            
+        self._chunk_counter += 1
+        
+        # Generate mock transcript every few chunks
+        if self._chunk_counter % 5 == 0:  # Every 5th chunk
+            self._generate_mock_transcript()
+            
         return True
+    
+    def _generate_mock_transcript(self):
+        """Generate mock transcript segments"""
+        mock_phrases = [
+            "We need to review the project timeline",
+            "The budget allocation looks good for Q2", 
+            "Let's schedule a follow-up meeting next week",
+            "Sarah will coordinate with the design team",
+            "The client feedback has been very positive",
+            "We should finalize the proposal by Friday"
+        ]
+        
+        import random
+        text = random.choice(mock_phrases)
+        speaker_id = f"Speaker_{(self._chunk_counter % 2) + 1}"
+        
+        segment = TranscriptSegment(
+            text=text,
+            speaker_id=speaker_id,
+            confidence=0.95,
+            timestamp=datetime.now(),
+            is_final=True,
+            chunk_id=self._chunk_counter,
+            language_code="en-US"
+        )
+        
+        self._segments.append(segment)
+        
+        # Call transcript callback to send to SSE stream
+        if self._transcript_callback:
+            self._transcript_callback(segment)
+        
+        print(f"🎭 [MOCK] {speaker_id}: {text}")
     
     def get_status(self):
         return STTStatus(
             is_recording=self._is_recording,
             session_duration=0.0,
-            total_chunks_processed=0,
+            total_chunks_processed=self._chunk_counter,
             queue_size=0,
             queue_health="healthy",
-            speakers_detected=0,
-            total_segments=0,
-            current_chunk_id=0,
+            speakers_detected=len(set(seg.speaker_id for seg in self._segments)),
+            total_segments=len(self._segments),
+            current_chunk_id=self._chunk_counter,
             last_activity=datetime.now()
         )
     
     def get_transcript(self, format_type="full"):
-        return {"transcript": "Mock transcript", "segments": []}
+        if not self._segments:
+            return {"transcript": "No transcript available yet", "segments": []}
+            
+        transcript_text = " ".join(seg.text for seg in self._segments)
+        return {
+            "transcript": transcript_text,
+            "segments": [seg.to_dict() for seg in self._segments]
+        }
     
     def save_transcript(self, filename=None):
         return {"success": True, "message": "Mock transcript saved"}
