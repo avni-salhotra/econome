@@ -61,6 +61,20 @@ class GCPEphemeralSessionManager:
         self.project_id = project_id
         self.use_firestore = FIRESTORE_AVAILABLE
         
+        # ------------------------------------------------------------------
+        # 🌐 Cloud Run default-SA authentication fix
+        # ------------------------------------------------------------------
+        # Some older revisions mistakenly set GOOGLE_APPLICATION_CREDENTIALS
+        # to a non-existent secret path (e.g. /app/secrets/speech-credentials.json).
+        # When running on Cloud Run / GKE Autopilot this breaks the automatic
+        # metadata-server credentials that the Firestore client prefers. We
+        # therefore strip the variable in non-local environments so that
+        # google.auth.default() falls back to the attached runtime SA.
+        env_mode = os.getenv("ENVIRONMENT", "development").lower()
+        if env_mode in ("staging", "production", "prod") and os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            bad_path = os.environ.pop("GOOGLE_APPLICATION_CREDENTIALS")
+            print(f"⚠️ Removed stale GOOGLE_APPLICATION_CREDENTIALS={bad_path} to use default runtime creds")
+
         if self.use_firestore:
             try:
                 import os
