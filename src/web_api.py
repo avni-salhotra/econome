@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 FastAPI Web Server for Econome System
-GCP-native web interface with real-time WebSocket communication
+GCP-native web interface with real-time HTTP communication
 """
 
 import os
@@ -9,12 +9,14 @@ import asyncio
 import json
 import logging
 import time
+import base64
+import uuid
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, AsyncGenerator
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, File, UploadFile, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 import uvicorn
 
@@ -53,10 +55,8 @@ app.add_middleware(
 session_manager = GCPEphemeralSessionManager()
 # WebSocket manager removed - using HTTP-only API
 
-# Replacement function for WebSocket calls
-async def log_websocket_message(connection_id: str, message: dict):
-    """Log WebSocket messages since WebSocket functionality is removed"""
-    logger.info(f"📤 WebSocket message (logged only): {connection_id} -> {message.get('type', 'unknown')}")
+# Store for server-sent events connections
+sse_connections: Dict[str, asyncio.Queue] = {}
 
 # Store active conversation systems per connection
 active_conversations: Dict[str, ConversationIntelligenceSystem] = {}
@@ -247,8 +247,159 @@ async def simulate_conversation():
         "privacy_note": "This demo link will automatically expire and delete data in 24 hours."
     }
 
-# WebSocket endpoint removed - using HTTP-only API
-# Original WebSocket functionality has been converted to HTTP endpoints
+# Real-time audio streaming endpoints
+
+@app.post("/api/conversation/start")
+async def start_conversation():
+    """Start a new conversation session"""
+    connection_id = str(uuid.uuid4())
+    
+    # Create conversation system
+    conversation_system = ConversationIntelligenceSystem()
+    active_conversations[connection_id] = conversation_system
+    
+    # Initialize frontend streaming mode
+    result = await start_frontend_streaming_mode(connection_id, conversation_system)
+    
+    # Create SSE queue for this connection
+    sse_connections[connection_id] = asyncio.Queue()
+    
+    return {
+        "connection_id": connection_id,
+        "status": "started",
+        "initialization": result
+    }
+
+@app.post("/api/conversation/{connection_id}/audio")
+async def receive_audio_chunk(connection_id: str, request: Request):
+    """Receive audio chunk from frontend"""
+    if connection_id not in active_conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation_system = active_conversations[connection_id]
+    
+    # Read audio data from request body
+    audio_data = await request.body()
+    
+    # Convert to base64 for processing
+    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+    
+    # Process the audio chunk
+    result = await process_frontend_audio_chunk(
+        connection_id, 
+        audio_base64, 
+        request.headers.get('content-type', 'audio/webm'),
+        conversation_system
+    )
+    
+    return {"status": "processed", "result": result}
+
+@app.post("/api/conversation/{connection_id}/stop")
+async def stop_conversation(connection_id: str):
+    """Stop conversation and get results"""
+    if connection_id not in active_conversations:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    
+    conversation_system = active_conversations[connection_id]
+    
+    try:
+        # Stop the conversation system
+        result = conversation_system.stop_system()
+        
+        # Wait a moment for final processing
+        await asyncio.sleep(2)
+        
+        # Get results
+        summary = getattr(conversation_system, 'summary', 'No summary available')
+        action_items = getattr(conversation_system, 'action_items', [])
+        
+        # Create ephemeral session
+        token = await session_manager.create_session(
+            summary=summary,
+            action_items=action_items,
+            session_metadata={
+                "connection_id": connection_id,
+                "session_type": "real_time"
+            }
+        )
+        
+        base_url = os.getenv("BASE_URL", "http://localhost:8080")
+        ephemeral_url = f"{base_url}/api/results/{token}"
+        
+        # Clean up
+        del active_conversations[connection_id]
+        if connection_id in sse_connections:
+            del sse_connections[connection_id]
+        
+        return {
+            "status": "completed",
+            "summary": summary,
+            "action_items": action_items,
+            "ephemeral_url": ephemeral_url,
+            "expires_in_hours": 24
+        }
+        
+    except Exception as e:
+        logger.error(f"Error stopping conversation {connection_id}: {e}")
+        # Clean up on error
+        if connection_id in active_conversations:
+            del active_conversations[connection_id]
+        if connection_id in sse_connections:
+            del sse_connections[connection_id]
+        raise HTTPException(status_code=500, detail=f"Error stopping conversation: {str(e)}")
+
+@app.get("/api/conversation/{connection_id}/events")
+async def stream_events(connection_id: str):
+    """Server-sent events endpoint for real-time updates"""
+    if connection_id not in sse_connections:
+        raise HTTPException(status_code=404, detail="Connection not found")
+    
+    async def event_generator() -> AsyncGenerator[str, None]:
+        queue = sse_connections[connection_id]
+        try:
+            while True:
+                try:
+                    # Wait for events with timeout
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    yield f"data: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    # Send keepalive
+                    yield "data: {\"type\": \"keepalive\"}\n\n"
+                except Exception as e:
+                    logger.error(f"Error in event generator: {e}")
+                    break
+        except Exception as e:
+            logger.error(f"Event generator error: {e}")
+        finally:
+            # Clean up on disconnect
+            if connection_id in sse_connections:
+                del sse_connections[connection_id]
+    
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Headers": "Cache-Control"
+        }
+    )
+
+# Helper function to send events to SSE connections
+async def send_sse_event(connection_id: str, event_data: dict):
+    """Send event to SSE connection"""
+    if connection_id in sse_connections:
+        try:
+            await sse_connections[connection_id].put(event_data)
+        except Exception as e:
+            logger.error(f"Error sending SSE event: {e}")
+
+# Replace WebSocket message logging with SSE events
+async def log_websocket_message(connection_id: str, message: dict):
+    """Send message as SSE event instead of WebSocket"""
+    await send_sse_event(connection_id, message)
+    logger.info(f"📤 SSE message sent: {connection_id} -> {message.get('type', 'unknown')}")
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
     """
