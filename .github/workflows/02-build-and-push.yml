@@ -232,6 +232,8 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: "🔍 Verify workflow trigger"
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
         echo "🔍 Verifying staging deployment workflow was triggered..."
         # 🚀 OPTIMIZED: Removed 5s wait - GitHub registers workflows immediately
