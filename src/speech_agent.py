@@ -194,6 +194,7 @@ class ProductionSTTServiceV2:
                 # Use us-central1 endpoint to match our deployment region
                 from google.api_core.client_options import ClientOptions
                 
+                # For Speech V2, use the correct regional endpoint format
                 client_options = ClientOptions(
                     api_endpoint="us-central1-speech.googleapis.com"
                 )
@@ -207,7 +208,9 @@ class ProductionSTTServiceV2:
                 # Speech V2 uses recognizers - use us-central1 to match deployment region
                 self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
 
-                print("✅ Google Cloud Speech V2 client initialized (us-central1 regional)")
+                print(f"✅ Google Cloud Speech V2 client initialized (us-central1 regional)")
+                print(f"🔍 Using recognizer: {self.recognizer}")
+                print(f"🔍 Using endpoint: us-central1-speech.googleapis.com")
                 
                 # Initialize streaming config after client is ready
                 self._initialize_streaming_config()
@@ -378,6 +381,10 @@ class ProductionSTTServiceV2:
         """🚨 CRITICAL: Generator that yields audio chunks for streaming (Speech V2 pattern)"""
         # First, send the recognizer and streaming config (Speech V2 API pattern)
         # According to V2 docs: "the first message must contain recognizer and streaming_config"
+        
+        print(f"🔍 STREAMING_REQUEST: recognizer={self.recognizer}")
+        print(f"🔍 STREAMING_REQUEST: config.language_codes={self._streaming_config.config.language_codes}")
+        
         yield speech_v2.StreamingRecognizeRequest(
             recognizer=self.recognizer,
             streaming_config=self._streaming_config
