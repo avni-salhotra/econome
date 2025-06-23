@@ -584,23 +584,21 @@ class ActionItemAgent(Agent):
             print(f"❌ ActionAgent: Storage error: {e}")
 
 class OrchestrationAgent(Agent):
-    """Coordinates all agents and manages conversation sessions"""
-    
-    def __init__(self, session_id: str):
-        super().__init__("orchestration", "Multi-agent coordination and session management")
-        
-        # Session management
-        self.current_session = session_id
-        self.session_state = {}
-        self.connected_clients = []
-        
-        # Agent health monitoring
-        self.agent_health = {}
-        
-        print("✅ OrchestrationAgent initialized")
-    
+    """Orchestrates the conversation flow between all agents"""
+
+    def __init__(self, session_id: str, sse_callback: Optional[Callable] = None):
+        super().__init__("orchestration", "Orchestrates conversation flow")
+        self.session_id = session_id
+        self.sse_callback = sse_callback
+        self.full_transcript: List[Dict] = []
+        self.final_summary: Optional[str] = None
+        self.final_action_items: Optional[List[Dict]] = None
+        self.is_processing_final = False
+        self.start_time = time.time()
+        print(f"✅ OrchestrationAgent initialized for session {self.session_id}")
+
     def _setup_message_handlers(self):
-        """Set up message handlers"""
+        """Set up message handlers for orchestration agent"""
         self.message_handlers = {
             "transcription_started": self._handle_transcription_started,
             "transcription_completed": self._handle_transcription_completed,
@@ -610,16 +608,29 @@ class OrchestrationAgent(Agent):
             "get_session_summary": self._handle_get_session_summary,
             "agent_health_check": self._handle_agent_health_check
         }
-    
+        # Add SSE callback if available
+        if self.sse_callback:
+            try:
+                # Use a thread-safe method to call the async callback
+                loop = asyncio.get_running_loop()
+                loop.call_soon_threadsafe(self.sse_callback, self.session_id, {
+                    "type": "analysis_complete",
+                    "final_summary": self.final_summary,
+                    "final_action_items": self.final_action_items,
+                    "ephemeral_url": "http://example.com/results/placeholder" # Placeholder
+                })
+            except Exception as e:
+                print(f"❌ OrchestrationAgent: Failed to send SSE event: {e}")
+
     async def _handle_transcription_started(self, message: Message):
         """Handle transcription start notification"""
         try:
             start_data = message.data
-            if self.current_session:
+            if self.session_id:
                 self.session_state["transcription_active"] = True
                 self.session_state["transcription_start_time"] = datetime.now()
                 
-            print(f"🎤 Orchestration: Transcription started for session {self.current_session}")
+            print(f"🎤 Orchestration: Transcription started for session {self.session_id}")
             
         except Exception as e:
             print(f"❌ Orchestration: Error handling transcription start: {e}")
@@ -628,7 +639,7 @@ class OrchestrationAgent(Agent):
         """Handle transcription completion - NOW WITH FINAL ANALYSIS"""
         try:
             completion_data = message.data
-            if self.current_session:
+            if self.session_id:
                 self.session_state["transcription_active"] = False
                 self.session_state["transcription_end_time"] = datetime.now()
                 self.session_state["final_transcript"] = completion_data.get("final_transcript", {})
@@ -636,7 +647,7 @@ class OrchestrationAgent(Agent):
                 # NEW: Get complete transcript and analyze with Gemini
                 await self._process_final_analysis(completion_data)
 
-            print(f"⏹️ Orchestration: Transcription completed for session {self.current_session}")
+            print(f"⏹️ Orchestration: Transcription completed for session {self.session_id}")
 
         except Exception as e:
             print(f"❌ Orchestration: Error handling transcription completion: {e}")
@@ -789,7 +800,7 @@ class OrchestrationAgent(Agent):
         """Handle live transcript updates"""
         try:
             transcript_data = message.data
-            if self.current_session:
+            if self.session_id:
                 # Update session state with latest transcript
                 if "live_transcript_chunks" not in self.session_state:
                     self.session_state["live_transcript_chunks"] = []
@@ -804,7 +815,7 @@ class OrchestrationAgent(Agent):
         """Handle action items extraction"""
         try:
             action_data = message.data
-            if self.current_session:
+            if self.session_id:
                 if "action_items" not in self.session_state:
                     self.session_state["action_items"] = []
                 
@@ -855,7 +866,7 @@ class OrchestrationAgent(Agent):
     def start_conversation_session(self) -> str:
         """Initialize new conversation session"""
         session_id = f"conversation_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        self.current_session = session_id
+        self.session_id = session_id
         self.session_state = {
             "session_id": session_id,
             "start_time": datetime.now(),
@@ -880,7 +891,7 @@ class OrchestrationAgent(Agent):
 
     def end_conversation_session(self) -> Dict[str, Any]:
         """End current conversation session"""
-        if not self.current_session:
+        if not self.session_id:
             return {"error": "No active session"}
         
         # Update session state
@@ -890,16 +901,16 @@ class OrchestrationAgent(Agent):
         # Get final summary
         summary = self.get_session_summary()
         
-        print(f"🏁 Orchestration: Ended session {self.current_session}")
+        print(f"🏁 Orchestration: Ended session {self.session_id}")
         
         # Clear current session
-        self.current_session = None
+        self.session_id = None
         
         return summary
 
     def get_session_summary(self) -> Dict[str, Any]:
         """Get comprehensive session summary with REAL Gemini summary AND action items"""
-        if not self.current_session:
+        if not self.session_id:
             return {"error": "No active session"}
 
         duration = datetime.now() - self.session_state["start_time"]
@@ -910,7 +921,7 @@ class OrchestrationAgent(Agent):
         full_transcript = self.session_state.get("full_transcript_text", "")
 
         return {
-            "session_id": self.current_session,
+            "session_id": self.session_id,
             "status": self.session_state["status"],
             "start_time": self.session_state["start_time"].isoformat(),
             "duration_seconds": duration.total_seconds(),
@@ -927,7 +938,7 @@ class OrchestrationAgent(Agent):
 
     def get_live_status(self) -> Dict[str, Any]:
         """Get real-time system status"""
-        if not self.current_session:
+        if not self.session_id:
             return {
                 "session_active": False,
                 "message": "No active session"
@@ -935,7 +946,7 @@ class OrchestrationAgent(Agent):
         
         return {
             "session_active": True,
-            "session_id": self.current_session,
+            "session_id": self.session_id,
             "transcription_active": self.session_state.get("transcription_active", False),
             "agents_running": sum(1 for agent in self.other_agents.values() 
                                if hasattr(agent, 'is_running') and agent.is_running),
@@ -946,28 +957,24 @@ class OrchestrationAgent(Agent):
 
 
 class ConversationIntelligenceSystem:
-    """Main system orchestrator for real-time conversation intelligence - FIXED VERSION"""
+    """Manages the entire conversation intelligence system"""
 
-    def __init__(self, session_id: str):
-        """Initializes the conversation intelligence system."""
+    def __init__(self, session_id: str, sse_callback: Optional[Callable] = None):
         self.session_id = session_id
-        self.stt_service = ProductionSTTServiceV2()
-        
-        # Correctly initialize the orchestration agent with the session_id
-        self.orchestration_agent = OrchestrationAgent(session_id=self.session_id)
-
-        # Set up the transcript callback
-        self.stt_service.set_transcript_callback(self.orchestration_agent.process_transcript_segment)
-
-        self.loop = None
-        self.agents = {}
+        self.stt_service: ProductionSTTServiceV2 = create_stt_service()
+        self.agents: Dict[str, Agent] = {}
         self.is_running = False
-        self.mock_mode = False
-        self.kwargs = {}
-        print("✅ Conversation Intelligence System initialized")
+        self.start_time = time.time()
+        self.sse_callback = sse_callback # Store callback
+        
+        # Build and connect agents
+        self._build_agents()
+        self._connect_agents()
+
+        print(f"✅ ConversationIntelligenceSystem initialized for session {self.session_id}")
 
     def _connect_agents(self):
-        """Connect all agents for inter-agent communication - FIXED VERSION"""
+        """Connect agents to each other"""
         # Agent name mapping: internal_name -> agent_names_used_in_messages
         agent_connections = {
             "stt": ["analysis", "orchestration", "actions"],
@@ -982,24 +989,21 @@ class ConversationIntelligenceSystem:
                 if target_key in self.agents:
                     agent.connect_agent(target_key, self.agents[target_key])
 
-        print("🔗 All agents connected with fixed naming")
+        print("🔗 Agents connected")
 
     def _build_agents(self):
-        """Build and initialize all agents - FIXED VERSION"""
-        self.stt_service = create_stt_service(mock_mode=self.mock_mode, **self.kwargs)
-
-        # Use the agent classes from this file
-        # WebSocket functionality removed
-        self.agents = {
-            "stt": STTAgent(self.stt_service, self.loop),
-            "analysis": LiveAnalysisAgent(),
-            "actions": ActionItemAgent(),
-            "orchestration": self.orchestration_agent
-        }
-        self._connect_agents()
+        """Build all the agents required for the system"""
+        self.agents['stt'] = STTAgent(stt_service=self.stt_service)
+        self.agents['orchestration'] = OrchestrationAgent(
+            session_id=self.session_id,
+            sse_callback=self.sse_callback # Pass callback here
+        )
+        self.agents['live_analysis'] = LiveAnalysisAgent()
+        self.agents['action_items'] = ActionItemAgent()
+        print("🤖 All agents built")
 
     async def start_system(self) -> str:
-        """Start the entire multi-agent system - FIXED VERSION"""
+        """Start all agents and return the session ID"""
         print("🚀 Starting Multi-Agent Conversation Intelligence System...")
         self.loop = asyncio.get_running_loop()
         self._build_agents()

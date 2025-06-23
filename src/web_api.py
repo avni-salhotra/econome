@@ -298,8 +298,11 @@ async def start_conversation():
     connection_id = str(uuid.uuid4())
     logger.info(f"🚀 Starting new conversation: {connection_id}")
 
-    # Initialize the full system here
-    conversation_system = ConversationIntelligenceSystem(session_id=connection_id)
+    # Initialize the full system here, now with the required callback
+    conversation_system = ConversationIntelligenceSystem(
+        session_id=connection_id,
+        sse_callback=send_sse_event  # Pass the callback function
+    )
     active_conversations[connection_id] = conversation_system
 
     # Create a queue for SSE events
