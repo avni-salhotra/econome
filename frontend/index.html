@@ -220,7 +220,7 @@
                 this.isSafari = this.detectSafariBrowser();
 
                 // NEW: define chunk interval (ms) for MediaRecorder
-                this.chunkInterval = 50; // 50 ms for lower latency, still under GCP limits
+                this.chunkInterval = 750; // 750 ms to buffer more audio for better sentence context
 
                 // Audio streaming properties
                 this.mediaRecorder = null;
@@ -633,6 +633,9 @@ Would you like to try Demo Mode instead?`;
                         track.stop();
                     });
                 }
+
+                // Wait a moment for the final audio chunk to be sent
+                await new Promise(resolve => setTimeout(resolve, 500));
 
                 // Stop the conversation on the backend
                 if (this.connectionId) {
