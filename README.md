@@ -22,6 +22,40 @@
 
 ---
 
+## 🤖 ADK Documentation Agent - **NOW AVAILABLE!**
+
+**✅ FULLY OPERATIONAL** - Experience Econome's intelligence through Google's Agent Development Kit!
+
+### 🚀 **Try the ADK Agent Locally**
+
+The Econome ADK Documentation Agent provides intelligent access to our technical documentation through natural language queries. Perfect for hackathon judges and developers!
+
+```bash
+# One-command setup
+./setup-adk.sh
+```
+
+**🎯 What the ADK Agent Does:**
+- 🔍 **Semantic Documentation Search** - Ask questions in natural language
+- 📚 **4 Technical Documents** - Architecture, deployment, design decisions, security
+- 🛠️ **5 Function Tools** - Specialized search and retrieval capabilities  
+- ⚡ **Sub-2 Second Responses** - Real-time intelligent assistance
+- 🔐 **Multiple Auth Methods** - Google AI Studio API keys or Google Cloud credentials
+
+**📖 Judge-Friendly Documentation:**
+- [**README-JUDGES.md**](README-JUDGES.md) - Complete setup guide for hackathon evaluation
+- [**README-ADK.md**](README-ADK.md) - Technical details and architecture
+
+**🎬 Example Interactions:**
+- *"List available documentation"*
+- *"Explain the deployment process"* 
+- *"What are the key security features?"*
+- *"Show me the architecture overview"*
+
+**🌐 Access:** http://localhost:8002 (after running setup script)
+
+---
+
 ## 🏗️ Production Architecture
 
 ### Technology Stack & Design Decisions
@@ -392,6 +426,11 @@ gcloud run services describe econome --region=us-central1
 ---
 
 ## 📚 Documentation
+
+### ADK Integration (NEW!)
+- [🤖 **ADK Judge Setup Guide**](README-JUDGES.md) - Quick start for hackathon evaluation
+- [🚀 **ADK Technical Documentation**](README-ADK.md) - Architecture and implementation details
+- [🛠️ **ADK Setup Script**](setup-adk.sh) - One-command local deployment
 
 ### Technical Documentation
 - [🏗️ Architecture Deep Dive](docs/ARCHITECTURE.md)
