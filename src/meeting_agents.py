@@ -138,10 +138,10 @@ class ConversationEvent:
 # --- Fixed STTAgent with proper async message handling and inter-agent messaging ---
 class STTAgent(Agent):
     """Agent wrapper for STT service - clean separation of concerns (asyncio compatible)"""
-    def __init__(self, stt_service, loop=None, websocket_manager=None, **kwargs):
+    def __init__(self, stt_service, loop=None, **kwargs):
         super().__init__("stt", "Speech-to-text agent using Google Cloud Speech V2")
         self.stt_service = stt_service
-        self.websocket_manager = websocket_manager  # Add WebSocket manager
+        # WebSocket functionality removed
         # If loop is not provided, get the running loop
         try:
             self.loop = loop or asyncio.get_running_loop()
@@ -254,27 +254,7 @@ class STTAgent(Agent):
                 self._collected_transcripts = []
             self._collected_transcripts.append(event.to_dict())
             
-            # 🔧 CRITICAL FIX: Forward transcript to WebSocket if available
-            # This ensures real-time transcription reaches the frontend
-            if hasattr(self, 'websocket_manager') and self.websocket_manager:
-                try:
-                    # Try to broadcast the transcript to all connections
-                    import asyncio
-                    loop = asyncio.get_running_loop()
-                    asyncio.run_coroutine_threadsafe(
-                        self.websocket_manager.broadcast_live_transcript(
-                            text=segment.text,
-                            confidence=segment.confidence,
-                            speaker_id=segment.speaker_id
-                        ),
-                        loop
-                    )
-                    print(f"✅ Transcript forwarded to WebSocket: {segment.text[:50]}...")
-                except RuntimeError as re:
-                    print(f"⚠️ No event loop available for WebSocket forwarding: {re}")
-                    print(f"📝 Transcript (not forwarded): {segment.text}")
-                except Exception as e:
-                    print(f"❌ Error forwarding transcript to WebSocket: {e}")
+            # WebSocket functionality removed - transcripts are now handled via direct HTTP API
             
             print(f"📝 Transcript collected: {segment.text[:50]}..." if len(segment.text) > 50 else f"📝 Transcript collected: {segment.text}")
         except Exception as e:
@@ -293,25 +273,7 @@ class STTAgent(Agent):
             "timestamp": datetime.now().isoformat()
         })
 
-        # 🔧 CRITICAL FIX: Forward errors to WebSocket if available
-        # This ensures error visibility in the frontend
-        if hasattr(self, 'websocket_manager') and self.websocket_manager:
-            try:
-                import asyncio
-                loop = asyncio.get_running_loop()
-                asyncio.run_coroutine_threadsafe(
-                    self.websocket_manager.broadcast_system_status(
-                        status="error",
-                        message=f"STT Error: {error_type} - {str(error)}",
-                        details={"error_type": error_type, "error_message": str(error)}
-                    ),
-                    loop
-                )
-                print(f"✅ STT error forwarded to WebSocket: {error_type}")
-            except RuntimeError as re:
-                print(f"⚠️ No event loop available for error forwarding: {re}")
-            except Exception as e:
-                print(f"❌ Error forwarding STT error to WebSocket: {e}")
+        # WebSocket functionality removed - errors are now handled via direct HTTP API
         
         print(f"⚠️ STT Error logged: {error_type} - {error}")
 
@@ -986,14 +948,14 @@ class OrchestrationAgent(Agent):
 class ConversationIntelligenceSystem:
     """Main system orchestrator for real-time conversation intelligence - FIXED VERSION"""
 
-    def __init__(self, mock_mode: bool = False, websocket_manager=None, **kwargs):
+    def __init__(self, mock_mode: bool = False, **kwargs):
         print("🏗️ Initializing Conversation Intelligence System...")
         self.loop = None
         self.stt_service = None
         self.agents = {}
         self.is_running = False
         self.mock_mode = mock_mode
-        self.websocket_manager = websocket_manager  # Add WebSocket manager
+        # WebSocket functionality removed
         self.kwargs = kwargs
         self.session_id = None  # FIXED: Add session_id storage
         print("✅ Conversation Intelligence System initialized")
@@ -1021,9 +983,9 @@ class ConversationIntelligenceSystem:
         self.stt_service = create_stt_service(mock_mode=self.mock_mode, **self.kwargs)
 
         # Use the agent classes from this file
-        # TEMPORARILY DISABLED: WebSocket manager to fix async crashes
+        # WebSocket functionality removed
         self.agents = {
-            "stt": STTAgent(self.stt_service, self.loop, websocket_manager=None),
+            "stt": STTAgent(self.stt_service, self.loop),
             "analysis": LiveAnalysisAgent(),
             "actions": ActionItemAgent(),
             "orchestration": OrchestrationAgent()
@@ -1072,25 +1034,11 @@ class ConversationIntelligenceSystem:
                     "service_available": False
                 }
 
-            # Get WebSocket manager state
-            websocket_state = {}
-            if self.websocket_manager:
-                websocket_state = {
-                    "total_connections": len(self.websocket_manager.connections),
-                    "active_connections": len([
-                        conn for conn in self.websocket_manager.connections.values()
-                        if conn.is_active
-                    ]),
-                    "connection_stream_ids": {
-                        conn_id: conn.connection_stream_id
-                        for conn_id, conn in self.websocket_manager.connections.items()
-                    }
-                }
-            else:
-                websocket_state = {
-                    "error": "WebSocket manager not available",
-                    "total_connections": 0
-                }
+            # WebSocket functionality removed
+            websocket_state = {
+                "status": "WebSocket functionality removed - using direct HTTP API",
+                "total_connections": 0
+            }
 
             return {
                 "system_type": "ConversationIntelligenceSystem",
