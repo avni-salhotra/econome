@@ -298,27 +298,20 @@ async def start_conversation():
     connection_id = str(uuid.uuid4())
     logger.info(f"🚀 Starting new conversation: {connection_id}")
 
-    # Create a new conversation intelligence system for this session
+    # Initialize the full system here
     conversation_system = ConversationIntelligenceSystem(session_id=connection_id)
     active_conversations[connection_id] = conversation_system
-    
-    # Create a queue for this connection to send events
+
+    # Create a queue for SSE events
     sse_connections[connection_id] = asyncio.Queue()
 
-    # Initialize the STT service for frontend streaming
-    init_result = conversation_system.initialize_stt_service(
-        lambda segment: sse_connections[connection_id].put_nowait({
-            "type": "transcript",
-            "text": segment.text,
-            "confidence": segment.confidence,
-            "is_final": segment.is_final
-        })
-    )
+    logger.info(f"✅ System initialized for {connection_id}. Ready for audio.")
 
-    if not init_result["success"]:
-        raise HTTPException(status_code=500, detail=init_result["message"])
-
-    return {"connection_id": connection_id, "message": "Conversation started"}
+    return JSONResponse(content={
+        "connection_id": connection_id,
+        "message": "Session started, ready for audio chunks.",
+        "sse_url": f"/api/conversation/{connection_id}/events"
+    })
 
 @app.post("/api/conversation/{connection_id}/audio")
 async def receive_audio_chunk(connection_id: str, request: Request):
