@@ -539,9 +539,13 @@ Would you like to try Demo Mode instead?`;
 
                     this.audioChunks = [];
 
-                    this.mediaRecorder.ondataavailable = (event) => {
+                    this.mediaRecorder.ondataavailable = async (event) => {
                         if (event.data.size > 0) {
+                            console.log('🎵 Audio chunk received:', event.data.size, 'bytes');
                             this.audioChunks.push(event.data);
+                            
+                            // Send chunk immediately when available
+                            await this.sendAudioChunk();
                         }
                     };
 
@@ -552,16 +556,9 @@ Would you like to try Demo Mode instead?`;
                         }
                     };
 
-                    // Start recording and set up chunked sending
-                    this.mediaRecorder.start();
+                    // Start recording with timeslice for chunked data
+                    this.mediaRecorder.start(this.chunkInterval); // Send chunks every chunkInterval ms
                     this.isRecording = true;
-                    
-                    // Send audio chunks periodically
-                    this.audioChunkTimer = setInterval(async () => {
-                        if (this.isRecording && this.audioChunks.length > 0) {
-                            await this.sendAudioChunk();
-                        }
-                    }, this.chunkInterval);
 
                     this.updateRecordingState(true);
                     console.log('🎤 Recording started');
@@ -574,18 +571,21 @@ Would you like to try Demo Mode instead?`;
 
             async sendAudioChunk() {
                 if (!this.connectionId || this.audioChunks.length === 0) {
+                    console.log('🚫 Skipping audio chunk:', !this.connectionId ? 'no connection' : 'no chunks');
                     return;
                 }
 
                 try {
                     // Combine all chunks into a single blob
                     const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+                    console.log('📦 Sending audio blob:', audioBlob.size, 'bytes');
                     this.audioChunks = []; // Clear chunks after creating blob
 
                     // Convert to base64 for HTTP transmission
                     const reader = new FileReader();
                     reader.onload = async () => {
                         const base64Audio = reader.result.split(',')[1];
+                        console.log('📤 Sending base64 audio chunk, length:', base64Audio.length);
                         
                         const response = await fetch(`/api/conversation/${this.connectionId}/audio`, {
                             method: 'POST',
@@ -599,14 +599,16 @@ Would you like to try Demo Mode instead?`;
                             })
                         });
 
-                        if (!response.ok) {
-                            console.error('Failed to send audio chunk:', response.statusText);
+                        if (response.ok) {
+                            console.log('✅ Audio chunk sent successfully');
+                        } else {
+                            console.error('❌ Failed to send audio chunk:', response.status, response.statusText);
                         }
                     };
                     reader.readAsDataURL(audioBlob);
 
                 } catch (error) {
-                    console.error('Error sending audio chunk:', error);
+                    console.error('❌ Error sending audio chunk:', error);
                 }
             }
 
@@ -617,12 +619,6 @@ Would you like to try Demo Mode instead?`;
                 }
 
                 this.isRecording = false;
-                
-                // Clear the chunk timer
-                if (this.audioChunkTimer) {
-                    clearInterval(this.audioChunkTimer);
-                    this.audioChunkTimer = null;
-                }
 
                 if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
                     this.mediaRecorder.stop();

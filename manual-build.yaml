@@ -1,0 +1,7 @@
+
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['build', '-f', 'devops/Dockerfile', '-t', 'gcr.io/econome-hackathon/econome:manual-fix-1750657305', '.']
+images:
+- 'gcr.io/econome-hackathon/econome:manual-fix-1750657305'
+
