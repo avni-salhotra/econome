@@ -220,7 +220,9 @@
                 this.isSafari = this.detectSafariBrowser();
 
                 // NEW: define chunk interval (ms) for MediaRecorder
-                this.chunkInterval = 750; // 750 ms to buffer more audio for better sentence context
+                // 🎯 OPTIMIZED: Reduced from 750ms to prevent oversized chunks
+                // Google Speech V2 has 25,600 byte limit - smaller intervals = smaller chunks
+                this.chunkInterval = 300; // 300ms for optimal chunk sizes under API limit
 
                 // Audio streaming properties
                 this.mediaRecorder = null;
@@ -556,7 +558,19 @@ Would you like to try Demo Mode instead?`;
 
                     this.mediaRecorder.ondataavailable = async (event) => {
                         if (event.data.size > 0) {
-                            console.log('🎵 Audio chunk received:', event.data.size, 'bytes');
+                            // 🎯 ENHANCED: Add chunk size monitoring and validation
+                            const chunkSize = event.data.size;
+                            const GOOGLE_CHUNK_LIMIT = 25600; // Google's hard limit
+                            
+                            console.log('🎵 Audio chunk received:', chunkSize, 'bytes');
+                            
+                            // Warn about potentially problematic chunk sizes
+                            if (chunkSize > GOOGLE_CHUNK_LIMIT) {
+                                console.warn('⚠️ Oversized chunk detected:', chunkSize, 'bytes - backend will split');
+                            } else if (chunkSize > 20000) {
+                                console.log('📊 Large chunk (within limits):', chunkSize, 'bytes');
+                            }
+                            
                             this.audioChunks.push(event.data);
                             
                             // Send chunk immediately when available

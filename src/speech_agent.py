@@ -16,10 +16,13 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 import json
 import os
+import sys
+import google.protobuf.duration_pb2
 
 # Google Cloud Speech V2 imports
 from google.cloud import speech_v2
 from google.oauth2 import service_account
+from google.protobuf import duration_pb2
 
 # Optional audio imports for CI compatibility
 try:
@@ -176,6 +179,11 @@ class ProductionSTTServiceV2:
         # Track timing between consecutive chunks for latency diagnostics
         self._prev_chunk_ts: Optional[float] = None
 
+        # Add proper import and constants for chunk management
+        self.GOOGLE_AUDIO_CHUNK_SIZE_LIMIT = 25600  # Google's hard limit
+        self.OPTIMAL_CHUNK_SIZE = 20480  # 20KB - safe buffer under limit
+        self._audio_buffer = bytearray()  # Buffer for assembling proper-sized chunks
+
         print(f"✅ ProductionSTTServiceV2 initialized with STREAMING recognition (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
@@ -242,97 +250,66 @@ class ProductionSTTServiceV2:
         try:
             print("🔧 Initializing streaming configuration...")
             
-            # 🎯 CRITICAL: Use explicit decoding config for Speech V2 instead of auto-detect
-            # Based on our frontend audio capture: 16kHz, 16-bit, mono PCM
+            # 🎯 SIMPLIFIED FIX: Use AUTO_DETECT with explicit language codes
+            # This is the most reliable approach for WebM/Opus from MediaRecorder
             recognition_config = speech_v2.RecognitionConfig(
-                auto_decoding_config={},  # Let the API auto-detect Opus
-                model="latest_long",
-                language_codes=["en-US"],
+                language_codes=["en-US"],  # CRITICAL: Must be first
+                
+                # 🚨 KEY FIX: Use auto-detect for WebM/Opus instead of explicit config
+                # Auto-detect handles MediaRecorder WebM containers reliably
+                auto_decoding_config=speech_v2.AutoDetectDecodingConfig(),
+                
+                # Recognition features optimized for real-time streaming
+                model="latest_long",  # Best model for long-form content
                 features=speech_v2.RecognitionFeatures(
                     enable_automatic_punctuation=True,
-                    enable_word_time_offsets=True,
-                ),
+                    enable_word_time_offsets=False,  # Disabled for performance
+                    enable_word_confidence=True,
+                    max_alternatives=1,              # Single best result for speed
+                    profanity_filter=False
+                )
             )
-            
-            # Debug: Print the config values
             print(f"🔍 RecognitionConfig created with language_codes: {recognition_config.language_codes}")
-            print(f"🔍 Audio encoding: LINEAR16, sample_rate: 16000Hz, channels: 1")
+            print(f"🔍 Audio format: WebM/Opus (auto-detected), latest_long model")
             
-            # Create streaming config
+            # Create streaming configuration with optimized settings
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
                 config=recognition_config,
                 streaming_features=speech_v2.StreamingRecognitionFeatures(
                     interim_results=True,
                     enable_voice_activity_events=True,
-                ),
+                    voice_activity_timeout=speech_v2.StreamingRecognitionFeatures.VoiceActivityTimeout(
+                        speech_start_timeout=duration_pb2.Duration(seconds=5),
+                        speech_end_timeout=duration_pb2.Duration(seconds=2)
+                    )
+                )
             )
-            
-            # 🚨 CRITICAL: Verify streaming config was created properly
-            if self._streaming_config is None:
-                raise Exception("StreamingRecognitionConfig creation returned None")
-            
-            if self._streaming_config.config is None:
-                raise Exception("StreamingRecognitionConfig.config is None")
-                
-            if not self._streaming_config.config.language_codes:
-                raise Exception("StreamingRecognitionConfig.config.language_codes is empty")
-            
-            print(f"🔍 StreamingConfig created with language_codes: {self._streaming_config.config.language_codes}")
-            print("✅ Streaming recognition configuration initialized for Opus audio")
+            print(f"🔍 StreamingConfig created with language_codes: {recognition_config.language_codes}")
+            print("✅ Streaming recognition configuration initialized for WebM/Opus audio")
             
         except Exception as e:
-            print(f"❌ CRITICAL: Failed to initialize streaming config: {e}")
-            print(f"❌ Exception type: {type(e).__name__}")
-            print(f"❌ Exception details: {str(e)}")
+            print(f"❌ Error initializing streaming config: {e}")
+            print("🔄 Attempting emergency fallback configuration...")
             
-            # 🚨 CRITICAL: Set to None and ensure we have a fallback
-            self._streaming_config = None
-            
-            # Try to create a minimal fallback config
             try:
-                print("🔄 Attempting fallback streaming config...")
-                minimal_config = speech_v2.RecognitionConfig(
-                    auto_decoding_config={},  # Let the API auto-detect Opus
-                    model="latest_long",
-                    language_codes=["en-US"],
-                    features=speech_v2.RecognitionFeatures(
-                        enable_automatic_punctuation=True,
-                        enable_word_time_offsets=True,
-                    ),
+                # 🚨 EMERGENCY FALLBACK: Ultra-minimal config
+                emergency_config = speech_v2.RecognitionConfig(
+                    language_codes=["en-US"],  # Explicit language codes
+                    model="latest_long"
                 )
                 
                 self._streaming_config = speech_v2.StreamingRecognitionConfig(
-                    config=minimal_config,
+                    config=emergency_config,
                     streaming_features=speech_v2.StreamingRecognitionFeatures(
-                        interim_results=True,
-                        enable_voice_activity_events=True,
-                    ),
+                        interim_results=True
+                    )
                 )
-                print("✅ Fallback streaming config created successfully")
+                print("✅ Emergency fallback config created successfully")
                 
-            except Exception as fallback_error:
-                print(f"❌ Fallback config also failed: {fallback_error}")
+            except Exception as emergency_error:
+                print(f"❌ Emergency config also failed: {emergency_error}")
                 self._streaming_config = None
-                
-            # 🚨 CRITICAL: If config initialization completely failed, create emergency fallback
-            if self._streaming_config is None:
-                print("🚨 EMERGENCY: Creating minimal working config as last resort...")
-                try:
-                    # Most basic possible config - just language code
-                    emergency_config = speech_v2.RecognitionConfig(
-                        language_codes=["en-US"]
-                    )
-                    
-                    self._streaming_config = speech_v2.StreamingRecognitionConfig(
-                        config=emergency_config
-                    )
-                    print("✅ Emergency minimal config created successfully")
-                    
-                except Exception as emergency_error:
-                    print(f"❌ Even emergency config failed: {emergency_error}")
-                    print("⚠️ Running without streaming recognition capabilities")
-                    self._streaming_config = None
-    
+
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
         """Set callback for real-time transcript segments"""
         self._transcript_callback = callback
@@ -414,10 +391,29 @@ class ProductionSTTServiceV2:
             try:
                 # Setup the stream with the audio generator
                 # The first request must be a config message
+                
+                # 🚨 DEBUG: Validate config before using it
+                if self._streaming_config is None:
+                    raise ValueError("Streaming config is None")
+                
+                if not hasattr(self._streaming_config, 'config') or self._streaming_config.config is None:
+                    raise ValueError("Streaming config.config is None")
+                    
+                if not hasattr(self._streaming_config.config, 'language_codes') or not self._streaming_config.config.language_codes:
+                    raise ValueError(f"Language codes missing or empty: {getattr(self._streaming_config.config, 'language_codes', 'MISSING')}")
+                
+                print(f"🔍 Creating streaming request with config language_codes: {self._streaming_config.config.language_codes}")
+                
                 config_request = speech_v2.StreamingRecognizeRequest(
                     recognizer=self.recognizer,
                     streaming_config=self._streaming_config
                 )
+                
+                # 🚨 DEBUG: Verify the request was created properly
+                if hasattr(config_request.streaming_config, 'config') and hasattr(config_request.streaming_config.config, 'language_codes'):
+                    print(f"🔍 Request created with language_codes: {config_request.streaming_config.config.language_codes}")
+                else:
+                    print("⚠️ Request created but cannot verify language_codes")
                 
                 audio_generator = self._audio_chunk_generator()
 
@@ -617,23 +613,79 @@ class ProductionSTTServiceV2:
 
     def queue_audio_chunk(self, audio_data: bytes) -> bool:
         """
-        Queue an audio chunk received from the frontend.
-        The audio data is expected to be raw bytes (e.g., from a WebM file).
+        Queue an audio chunk received from the frontend with intelligent chunk management.
+        
+        🎯 KEY IMPROVEMENTS:
+        1. Validates chunk size against Google's 25,600 byte limit
+        2. Splits oversized chunks into optimal-sized pieces  
+        3. Buffers small chunks for efficiency
+        4. Handles WebM container format properly
         """
         if not self._is_recording:
-            # Silently drop chunks if not recording to prevent log spam
             return False
 
         if self._stop_event.is_set():
             return False
 
         try:
-            # The audio generator now expects raw bytes
+            # 🚨 CRITICAL: Handle oversized chunks that exceed Google's limit
+            chunk_size = len(audio_data)
+            
+            if chunk_size > self.GOOGLE_AUDIO_CHUNK_SIZE_LIMIT:
+                print(f"⚠️ Oversized audio chunk ({chunk_size} bytes) - splitting for API compatibility")
+                return self._handle_oversized_chunk(audio_data)
+            
+            # For normal-sized chunks, queue directly
             self._audio_queue.put_nowait(audio_data)
             self._chunk_counter += 1
+            
+            # Debug logging for size monitoring
+            if chunk_size > 20000:  # Log larger chunks for monitoring
+                print(f"📊 Large chunk queued: {chunk_size} bytes (under limit)")
+            
             return True
+            
         except queue.Full:
             self._handle_error("audio_queue_full", "Audio queue is full, dropping audio chunk.")
+            return False
+
+    def _handle_oversized_chunk(self, audio_data: bytes) -> bool:
+        """
+        Split oversized audio chunks into API-compliant pieces.
+        
+        This handles the common case where WebM chunks from MediaRecorder
+        exceed Google's 25,600 byte limit.
+        """
+        chunk_size = len(audio_data)
+        chunks_created = 0
+        
+        try:
+            # Split into optimal-sized chunks
+            offset = 0
+            while offset < chunk_size:
+                # Calculate remaining bytes
+                remaining = chunk_size - offset
+                next_chunk_size = min(self.OPTIMAL_CHUNK_SIZE, remaining)
+                
+                # Extract chunk
+                chunk = audio_data[offset:offset + next_chunk_size]
+                
+                # Queue the chunk
+                try:
+                    self._audio_queue.put_nowait(chunk)
+                    chunks_created += 1
+                    offset += next_chunk_size
+                    
+                except queue.Full:
+                    print(f"❌ Queue full while splitting chunk - dropped {chunks_created} sub-chunks")
+                    return False
+            
+            self._chunk_counter += chunks_created
+            print(f"✅ Split oversized chunk ({chunk_size} bytes) into {chunks_created} API-compliant chunks")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Error splitting oversized chunk: {e}")
             return False
 
     def _manage_queue_health(self) -> None:

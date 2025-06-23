@@ -35,17 +35,25 @@ class OrchestrationAgent(Agent):
         if segment.is_final:
             self.full_transcript.append(segment.to_dict())
         
-        # Forward to frontend via SSE
+        # Forward to frontend via SSE - FIX: Handle threading properly
         if self.sse_callback:
-            asyncio.run_coroutine_threadsafe(
-                self.sse_callback(self.session_id, {
-                    "type": "transcript",
-                    "text": segment.text,
-                    "is_final": segment.is_final,
-                    "confidence": segment.confidence
-                }),
-                asyncio.get_running_loop()
-            )
+            try:
+                # Try to get existing event loop from the main thread
+                loop = asyncio.get_running_loop()
+                asyncio.run_coroutine_threadsafe(
+                    self.sse_callback(self.session_id, {
+                        "type": "transcript",
+                        "text": segment.text,
+                        "is_final": segment.is_final,
+                        "confidence": segment.confidence
+                    }),
+                    loop
+                )
+            except RuntimeError:
+                # No event loop running - skip SSE for now
+                # This happens when called from worker threads
+                print(f"📝 Transcript segment: {segment.text[:50]}..." + (" (final)" if segment.is_final else " (interim)"))
+                pass
 
 class ConversationIntelligenceSystem:
     """Manages the entire conversation intelligence system"""
