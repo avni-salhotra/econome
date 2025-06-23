@@ -219,6 +219,9 @@
                 this.connectionId = null;
                 this.isSafari = this.detectSafariBrowser();
 
+                // NEW: define chunk interval (ms) for MediaRecorder
+                this.chunkInterval = 100; // 100 ms chunks recommended by GCP best-practices
+
                 // Audio streaming properties
                 this.mediaRecorder = null;
                 this.audioStream = null;

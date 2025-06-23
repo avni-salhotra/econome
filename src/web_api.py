@@ -515,7 +515,47 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
             if init_result.get("success"):
                 logger.info("🎵 STT service initialized for frontend streaming")
                 logger.debug(f"🔍 Initialization result: {init_result}")
-                
+
+                # NEW ✨ Forward live transcript segments to the browser via SSE
+                import asyncio
+                from src.speech_agent import TranscriptSegment
+
+                loop = asyncio.get_running_loop()
+
+                def _forward_transcript(segment: TranscriptSegment):
+                    """Thread-safe forwarding of STT segments to SSE queue"""
+                    try:
+                        asyncio.run_coroutine_threadsafe(
+                            send_conversation_event(
+                                connection_id,
+                                {
+                                    "type": "transcript",
+                                    "text": segment.text,
+                                    "confidence": segment.confidence,
+                                    "timestamp": segment.timestamp.isoformat(),
+                                    "chunk_id": segment.chunk_id,
+                                    "speaker_id": segment.speaker_id,
+                                },
+                            ),
+                            loop,
+                        )
+                    except RuntimeError:
+                        # Event-loop is closed or not running – ignore
+                        pass
+
+                # Register the callback only once per connection
+                stt_service.set_transcript_callback(_forward_transcript)
+
+                # Optionally raise queue capacity to handle burst traffic
+                try:
+                    if hasattr(stt_service, "max_queue_size") and stt_service.max_queue_size < 100:
+                        stt_service.max_queue_size = 100
+                        if hasattr(stt_service, "_audio_queue"):
+                            import queue as _q
+                            stt_service._audio_queue = _q.Queue(maxsize=stt_service.max_queue_size)
+                except Exception:
+                    pass
+
                 # 🔍 CRITICAL DEBUG: Post-initialization state verification
                 post_init_debug = {
                     "timestamp": datetime.now().isoformat(),
