@@ -244,13 +244,13 @@ class ProductionSTTServiceV2:
             # 🎯 CRITICAL: Use explicit decoding config for Speech V2 instead of auto-detect
             # Based on our frontend audio capture: 16kHz, 16-bit, mono PCM
             recognition_config = speech_v2.RecognitionConfig(
-                explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
-                    encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                    sample_rate_hertz=16000,
-                    audio_channel_count=1,
+                auto_decoding_config={},  # Let the API auto-detect Opus
+                model="latest_long",
+                language_codes=["en-US"],
+                features=speech_v2.RecognitionFeatures(
+                    enable_automatic_punctuation=True,
+                    enable_word_time_offsets=True,
                 ),
-                language_codes=["en-US"],  # This must never be empty
-                model="latest_long",  # Use latest_long for better transcription
             )
             
             # Debug: Print the config values
@@ -262,6 +262,7 @@ class ProductionSTTServiceV2:
                 config=recognition_config,
                 streaming_features=speech_v2.StreamingRecognitionFeatures(
                     interim_results=True,
+                    enable_voice_activity_events=True,
                 ),
             )
             
@@ -276,7 +277,7 @@ class ProductionSTTServiceV2:
                 raise Exception("StreamingRecognitionConfig.config.language_codes is empty")
             
             print(f"🔍 StreamingConfig created with language_codes: {self._streaming_config.config.language_codes}")
-            print("✅ Streaming recognition configuration initialized with explicit encoding")
+            print("✅ Streaming recognition configuration initialized for Opus audio")
             
         except Exception as e:
             print(f"❌ CRITICAL: Failed to initialize streaming config: {e}")
@@ -290,19 +291,20 @@ class ProductionSTTServiceV2:
             try:
                 print("🔄 Attempting fallback streaming config...")
                 minimal_config = speech_v2.RecognitionConfig(
-                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
-                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                        sample_rate_hertz=16000,
-                        audio_channel_count=1,
-                    ),
+                    auto_decoding_config={},  # Let the API auto-detect Opus
+                    model="latest_long",
                     language_codes=["en-US"],
-                    model="default",  # Use default model as fallback
+                    features=speech_v2.RecognitionFeatures(
+                        enable_automatic_punctuation=True,
+                        enable_word_time_offsets=True,
+                    ),
                 )
                 
                 self._streaming_config = speech_v2.StreamingRecognitionConfig(
                     config=minimal_config,
                     streaming_features=speech_v2.StreamingRecognitionFeatures(
                         interim_results=True,
+                        enable_voice_activity_events=True,
                     ),
                 )
                 print("✅ Fallback streaming config created successfully")
@@ -523,128 +525,59 @@ class ProductionSTTServiceV2:
 
     def initialize_frontend_streaming(self) -> Dict[str, Any]:
         """
-        Initialize the STT service for frontend streaming mode
-
-        This provides a proper interface for frontend streaming initialization
-        instead of direct property access from web_api.py
+        Initializes the STT service to receive audio chunks from the frontend
+        instead of a local microphone.
         """
+        if self._is_recording:
+            return {"status": "error", "message": "Recording is already in progress"}
+
+        self._clear_audio_buffers()
+        self._is_recording = True
+        self._session_start_time = time.time()
+        self._chunk_counter = 0
+
+        # The master thread is now managed by the web API's start/stop calls
+        # We just need to ensure the processing thread starts if it's not running
+        if self._processing_thread is None or not self._processing_thread.is_alive():
+            self._stop_event.clear()
+            self._processing_thread = threading.Thread(
+                target=self._start_streaming_recognition,
+                daemon=True
+            )
+            self._processing_thread.start()
+
+        return {
+            "status": "initialized",
+            "message": "STT service is ready to receive audio chunks from frontend",
+            "sample_rate": self.sample_rate,
+            "chunk_duration": self.chunk_duration,
+            "required_format": "Opus in Ogg container (audio/webm)"
+        }
+
+    def queue_audio_chunk(self, audio_data: bytes) -> bool:
+        """
+        Queue an audio chunk received from the frontend.
+        The audio data is expected to be raw bytes (e.g., from a WebM file).
+        """
+        if not self._is_recording:
+            # Silently drop chunks if not recording to prevent log spam
+            return False
+
+        if self._stop_event.is_set():
+            return False
+
         try:
-            # Initialize state for frontend streaming
-            self._is_recording = True
-            self._session_start_time = time.time()
-            self._chunk_counter = 0
-            self._segments.clear()
-
-            # Clear any existing audio queue
-            while not self._audio_queue.empty():
-                try:
-                    self._audio_queue.get_nowait()
-                except queue.Empty:
-                    break
-
-            # Start processing thread if not already running (with proper synchronization)
-            if self._processing_thread is None or not self._processing_thread.is_alive():
-                import threading
-
-                self._processing_thread = threading.Thread(
-                    target=self._process_audio_chunks,
-                    daemon=True
-                )
-                self._processing_thread.start()
-
-                # Wait briefly to ensure thread is properly started
-                time.sleep(0.1)
-
-                # Verify thread started successfully
-                if not self._processing_thread.is_alive():
-                    raise Exception("Failed to start audio processing thread")
-
-            return {
-                "success": True,
-                "message": "Frontend streaming mode initialized",
-                "is_recording": self._is_recording,
-                "processing_thread_active": self._processing_thread.is_alive(),
-                "audio_queue_size": self._audio_queue.qsize()
-            }
-
-        except Exception as e:
-            return {
-                "success": False,
-                "message": f"Failed to initialize frontend streaming: {str(e)}",
-                "error": str(e)
-            }
-
-    def queue_audio_chunk(self, audio_array: np.ndarray) -> bool:
-        """
-        Queue an audio chunk for processing
-
-        Provides a proper interface for adding audio chunks instead of
-        direct access to _audio_queue from web_api.py
-        """
-        try:
-            # 🔍 CRITICAL DEBUG: Enhanced chunk queuing debugging
-            queue_debug = {
-                "is_recording": self._is_recording,
-                "processing_thread_exists": self._processing_thread is not None,
-                "processing_thread_alive": self._processing_thread.is_alive() if self._processing_thread else False,
-                "audio_array_shape": audio_array.shape,
-                "audio_array_dtype": str(audio_array.dtype),
-                "audio_array_has_data": np.any(audio_array != 0),
-                "current_queue_size": self._audio_queue.qsize(),
-                "max_queue_size": self.max_queue_size,
-                "chunk_counter": self._chunk_counter
-            }
-            print(f"🔍 DEBUG_QUEUE_AUDIO_CHUNK_ENTRY: {queue_debug}")
-            
-            if not self._is_recording:
-                print("⚠️ Cannot queue audio chunk - not recording")
-                return False
-
-            # Ensure processing thread is running
-            if self._processing_thread is None or not self._processing_thread.is_alive():
-                print("⚠️ Processing thread not running - cannot queue audio chunk")
-                return False
-
-            # OBSERVABILITY: Add timestamp to audio chunk for queue time tracking
-            from datetime import datetime
-            timestamped_chunk = {
-                "audio_data": audio_array,
-                "enqueue_timestamp": datetime.now().timestamp() * 1000,  # milliseconds
-                "chunk_id": self._chunk_counter
-            }
-
-            if not self._audio_queue.full():
-                self._audio_queue.put(timestamped_chunk, block=False)
-                print(f"✅ Audio chunk queued successfully (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
-                return True
-            else:
-                # Queue is full, remove oldest and add new (with timeout for safety)
-                try:
-                    dropped_chunk = self._audio_queue.get_nowait()
-                    self._audio_queue.put(timestamped_chunk, block=False)
-
-                    # Log dropped chunk with timing info
-                    if isinstance(dropped_chunk, dict) and "enqueue_timestamp" in dropped_chunk:
-                        queue_time_ms = timestamped_chunk["enqueue_timestamp"] - dropped_chunk["enqueue_timestamp"]
-                        print(f"⚠️ Audio queue was full - dropped oldest chunk (queue_time_ms: {queue_time_ms:.2f})")
-                    else:
-                        print("⚠️ Audio queue was full - dropped oldest chunk")
-                    print(f"✅ Audio chunk queued after drop (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
-                    return True
-                except queue.Empty:
-                    print("❌ Audio queue management failed - queue appeared full but was empty")
-                    return False
-
-        except Exception as e:
-            print(f"❌ Error queuing audio chunk: {e}")
+            # The audio generator now expects raw bytes
+            self._audio_queue.put_nowait(audio_data)
+            self._chunk_counter += 1
+            return True
+        except queue.Full:
+            self._handle_error("audio_queue_full", "Audio queue is full, dropping audio chunk.")
             return False
 
     def _manage_queue_health(self) -> None:
         """
-        Manage audio queue health and perform cleanup
-
-        This method monitors queue size and performs periodic cleanup
-        to prevent memory issues and ensure optimal performance
+        Periodically checks queue health and logs warnings if it's getting full.
         """
         try:
             current_time = time.time()

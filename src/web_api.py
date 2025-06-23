@@ -280,136 +280,64 @@ async def simulate_conversation():
 async def start_conversation():
     """Start a new conversation session"""
     connection_id = str(uuid.uuid4())
-    
-    # Create conversation system with REAL Google Cloud STT (not mock)
-    # Even in Cloud Run, we want real speech recognition for actual conversations
-    from .speech_agent import CLOUD_RUN_MODE
-    conversation_system = ConversationIntelligenceSystem(mock_mode=False)  # 🎤 FORCE REAL STT
-    
-    # CRITICAL: Start the system to build agents
-    session_id = await conversation_system.start_system()
-    logger.info(f"🚀 Conversation system started with session_id: {session_id}")
-    
+    logger.info(f"🚀 Starting new conversation: {connection_id}")
+
+    # Create a new conversation intelligence system for this session
+    conversation_system = ConversationIntelligenceSystem(session_id=connection_id)
     active_conversations[connection_id] = conversation_system
     
-    # Initialize frontend streaming mode
-    result = await start_frontend_streaming_mode(connection_id, conversation_system)
-    
-    # Create SSE queue for this connection
+    # Create a queue for this connection to send events
     sse_connections[connection_id] = asyncio.Queue()
+
+    # Initialize the STT service for frontend streaming
+    init_result = conversation_system.stt_service.initialize_frontend_streaming()
     
-    return {
+    if init_result.get("status") != "initialized":
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to initialize STT service: {init_result.get('message')}"
+        )
+
+    # Start the background tasks for this conversation
+    asyncio.create_task(start_frontend_streaming_mode(connection_id, conversation_system))
+
+    return JSONResponse(content={
         "connection_id": connection_id,
-        "status": "started",
-        "initialization": result
-    }
+        "message": "Conversation started, ready for audio.",
+        "stt_config": init_result,
+    })
 
 @app.post("/api/conversation/{connection_id}/audio")
 async def receive_audio_chunk(connection_id: str, request: Request):
-    """Receive audio chunk from frontend"""
+    """Receive an audio chunk from the frontend"""
     if connection_id not in active_conversations:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
+
     conversation_system = active_conversations[connection_id]
     
-    # --- Queue back-pressure check --------------------------------------------------
-    request_start = time.time()
-
     try:
-        stt_agent = conversation_system.get_agent("stt")
-        stt_service = stt_agent.stt_service if stt_agent and hasattr(stt_agent, "stt_service") else None
-        if stt_service and hasattr(stt_service, "_audio_queue"):
-            if stt_service._audio_queue.qsize() >= int(getattr(stt_service, "max_queue_size", 100) * QUEUE_BACKPRESSURE_THRESHOLD):
-                logger.warning(
-                    json.dumps({
-                        "event": "audio_rejected_429",
-                        "queue_size": stt_service._audio_queue.qsize(),
-                        "max_queue": stt_service.max_queue_size,
-                        "connection_id": connection_id,
-                        "timestamp": request_start
-                    })
-                )
-                raise HTTPException(status_code=429, detail="Server busy – please retry (audio queue full)")
-    except Exception:
-        # If anything goes wrong here we'd rather continue than crash
-        pass
+        # Read the raw audio data from the request body
+        audio_data = await request.body()
+        
+        if not audio_data:
+            return JSONResponse(status_code=400, content={"message": "No audio data received"})
 
-    # ------------------------------------------------------------------------------
-    content_type = request.headers.get('content-type', '').lower()
+        # Queue the raw audio data directly
+        success = conversation_system.stt_service.queue_audio_chunk(audio_data)
 
-    if 'application/json' in content_type:
-        # Handle JSON input from frontend
-        try:
-            json_data = await request.json()
-            audio_base64 = json_data.get('audio_data')
-            mime_type = json_data.get('format', 'webm')
-            if not audio_base64:
-                raise HTTPException(status_code=400, detail="No audio_data in JSON payload")
-            if len(audio_base64) > MAX_UPLOAD_BYTES * 1.37:  # base64 overhead ~37 %
-                raise HTTPException(status_code=413, detail="Audio chunk too large")
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Invalid JSON audio data: {str(e)}")
-    else:
-        # Handle raw binary audio data (preferred)
-        audio_bytes = await request.body()
-        if not audio_bytes:
-            raise HTTPException(status_code=400, detail="No audio data received")
-        if len(audio_bytes) > MAX_UPLOAD_BYTES:
-            raise HTTPException(status_code=413, detail="Audio chunk too large")
-        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
-        mime_type = request.headers.get('content-type', 'audio/webm')
+        if success:
+            return PlainTextResponse(status_code=202, content="Chunk received")
+        else:
+            # Service is busy or queue is full, apply back-pressure
+            return PlainTextResponse(status_code=429, content="Queue full, try again later")
 
-    # Avoid duplicating 'audio/' prefix
-    if '/' in mime_type:
-        final_mime_type = mime_type  # e.g., 'audio/webm'
-    else:
-        final_mime_type = f"audio/{mime_type}"
-
-    # Log incoming request size and queue metrics before heavy work
-    try:
-        qsize_pre = stt_service._audio_queue.qsize() if stt_service else -1
-    except Exception:
-        qsize_pre = -1
-
-    logger.debug(json.dumps({
-        "event": "audio_chunk_received",
-        "connection_id": connection_id,
-        "bytes": len(audio_bytes) if audio_bytes else 0,
-        "queue_size_pre": qsize_pre,
-        "timestamp": request_start
-    }))
-
-    # Process the audio chunk
-    result = await process_frontend_audio_chunk(
-        connection_id,
-        audio_base64,
-        final_mime_type,
-        conversation_system,
-    )
-
-    # Log completion
-    latency_ms = (time.time() - request_start) * 1000.0
-    try:
-        qsize_post = stt_service._audio_queue.qsize() if stt_service else -1
-    except Exception:
-        qsize_post = -1
-
-    logger.debug(json.dumps({
-        "event": "audio_chunk_processed",
-        "connection_id": connection_id,
-        "latency_ms": round(latency_ms, 2),
-        "queue_size_post": qsize_post,
-        "result_status": result.get("success", True) if isinstance(result, dict) else True,
-        "timestamp": time.time()
-    }))
-
-    return {"status": "processed", "result": result}
+    except Exception as e:
+        logger.error(f"❌ Error processing audio chunk for {connection_id}: {e}")
+        raise HTTPException(status_code=500, detail="Error processing audio chunk")
 
 @app.post("/api/conversation/{connection_id}/stop")
 async def stop_conversation(connection_id: str):
-    """Stop conversation and get results"""
+    """Stop the conversation and trigger final analysis"""
     if connection_id not in active_conversations:
         raise HTTPException(status_code=404, detail="Conversation not found")
     
