@@ -829,14 +829,18 @@ class ProductionSTTServiceV2:
             self._is_recording = False
             print("🛑 Recording flag set to False")
 
-            # STEP 2.5: 🚨 NEW: Clean up streaming session
+            # STEP 2.5: 🚨 NEW: Gracefully shut down streaming session
+            # Give Speech-to-Text up to 500 ms to flush any final results so we
+            # don't lose the last word of an utterance.
+
+            grace_deadline = time.time() + 0.5  # 500 ms
+            while time.time() < grace_deadline and self._stream_active:
+                time.sleep(0.05)
+
             with self._stream_lock:
                 if self._stream_active:
-                    print("🔄 Stopping streaming session...")
+                    print("🔄 Forcing streaming session shutdown after grace period")
                     self._stream_active = False
-                    
-                    # Give the stream a moment to clean up
-                    time.sleep(0.1)
 
             # STEP 3: Wait for processing thread to finish
             if self._processing_thread and self._processing_thread.is_alive():
