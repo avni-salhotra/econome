@@ -880,6 +880,60 @@ Would you like to try Demo Mode instead?`;
                 this.startBtn.disabled = isRecording;
                 this.stopBtn.disabled = !isRecording;
             }
+
+            /* =====================================================
+               🆕 Server-Sent Event Handlers (missing in original)
+               ===================================================== */
+
+            /**
+             * Handle incoming transcript SSE events.
+             * Expected payload shape:
+             *   { type: 'transcript', text: str, confidence: float }
+             */
+            handleTranscriptUpdate(event) {
+                if (!event?.text) return;
+                const conf = typeof event.confidence === 'number' ? event.confidence : 0.9;
+                this.addLiveTranscript(event.text, conf);
+            }
+
+            /**
+             * Handle incremental summary updates (optional future use).
+             */
+            handleSummaryUpdate(event) {
+                if (!event?.summary) return;
+                document.getElementById('summaryContent').innerHTML = `
+                    <p class="text-gray-800">${event.summary}</p>
+                `;
+            }
+
+            /**
+             * Handle conversation insights (placeholder for future Gemini live insights).
+             */
+            handleInsightUpdate(event) {
+                // Implement as needed – for now just log
+                console.log('💡 Insight event:', event);
+            }
+
+            /**
+             * Handle conversation complete – final summary & action items ready.
+             */
+            handleConversationComplete(event) {
+                this.updateStatus('complete', 'Analysis complete');
+                if (event?.summary || event?.action_items) {
+                    this.displayResults({
+                        summary: event.summary,
+                        action_items: event.action_items || []
+                    }, event.ephemeral_url || '');
+                }
+                this.resetControls();
+            }
+
+            handleError(event) {
+                const msg = event?.message || 'Unknown error';
+                this.updateStatus('error', msg);
+                this.showError(msg);
+                this.resetControls();
+            }
         }
 
         // Initialize the app when page loads
