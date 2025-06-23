@@ -245,6 +245,15 @@ class ProductionSTTServiceV2:
             try:
                 # Get audio chunk with timeout
                 chunk_data = self._audio_queue.get(timeout=1.0)
+                
+                # 🔍 CRITICAL DEBUG: Chunk received for processing
+                chunk_receive_debug = {
+                    "chunk_count": chunk_count + 1,
+                    "queue_size_after_get": self._audio_queue.qsize(),
+                    "chunk_data_type": type(chunk_data).__name__,
+                    "is_recording": self._is_recording
+                }
+                print(f"🔍 DEBUG_CHUNK_RECEIVED_FOR_PROCESSING: {chunk_receive_debug}")
 
                 # Double-check recording status before processing
                 if not self._is_recording:
@@ -753,6 +762,20 @@ class ProductionSTTServiceV2:
         direct access to _audio_queue from web_api.py
         """
         try:
+            # 🔍 CRITICAL DEBUG: Enhanced chunk queuing debugging
+            queue_debug = {
+                "is_recording": self._is_recording,
+                "processing_thread_exists": self._processing_thread is not None,
+                "processing_thread_alive": self._processing_thread.is_alive() if self._processing_thread else False,
+                "audio_array_shape": audio_array.shape,
+                "audio_array_dtype": str(audio_array.dtype),
+                "audio_array_has_data": np.any(audio_array != 0),
+                "current_queue_size": self._audio_queue.qsize(),
+                "max_queue_size": self.max_queue_size,
+                "chunk_counter": self._chunk_counter
+            }
+            print(f"🔍 DEBUG_QUEUE_AUDIO_CHUNK_ENTRY: {queue_debug}")
+            
             if not self._is_recording:
                 print("⚠️ Cannot queue audio chunk - not recording")
                 return False
@@ -772,6 +795,7 @@ class ProductionSTTServiceV2:
 
             if not self._audio_queue.full():
                 self._audio_queue.put(timestamped_chunk, block=False)
+                print(f"✅ Audio chunk queued successfully (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
                 return True
             else:
                 # Queue is full, remove oldest and add new (with timeout for safety)
@@ -785,9 +809,10 @@ class ProductionSTTServiceV2:
                         print(f"⚠️ Audio queue was full - dropped oldest chunk (queue_time_ms: {queue_time_ms:.2f})")
                     else:
                         print("⚠️ Audio queue was full - dropped oldest chunk")
+                    print(f"✅ Audio chunk queued after drop (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
                     return True
                 except queue.Empty:
-                    print("❌ Audio queue management failed")
+                    print("❌ Audio queue management failed - queue appeared full but was empty")
                     return False
 
         except Exception as e:

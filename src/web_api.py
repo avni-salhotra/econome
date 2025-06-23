@@ -322,10 +322,31 @@ async def conversation_websocket(websocket: WebSocket):
         # Register callback with STT agent
         stt_agent = conversation_system.get_agent("stt")
         if stt_agent and hasattr(stt_agent, 'stt_service'):
+            # 🚨 CRITICAL FIX: Override the STT agent callback with our WebSocket callback
+            # This ensures transcripts reach the frontend in real-time
             stt_agent.stt_service.set_transcript_callback(transcript_callback)
-            logger.info(f"✅ Transcript callback registered for {connection_id}")
+            logger.info(f"✅ WebSocket transcript callback registered for {connection_id} (overrides STT agent callback)")
+            
+            # 🔍 CRITICAL DEBUG: Callback setup verification
+            callback_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "stt_agent_type": type(stt_agent).__name__,
+                "stt_service_type": type(stt_agent.stt_service).__name__,
+                "callback_override": "websocket_callback_set"
+            }
+            logger.info(f"🔧 DEBUG_CALLBACK_SETUP: {callback_debug}")
         else:
             logger.warning(f"⚠️ STT agent not available for {connection_id}")
+            # 🔍 DEBUG: STT agent not available analysis
+            unavailable_debug = {
+                "timestamp": datetime.now().isoformat(),
+                "connection_id": connection_id,
+                "stt_agent_exists": stt_agent is not None,
+                "stt_agent_has_service": hasattr(stt_agent, 'stt_service') if stt_agent else False,
+                "conversation_system_type": type(conversation_system).__name__
+            }
+            logger.warning(f"🔍 DEBUG_STT_AGENT_UNAVAILABLE: {unavailable_debug}")
         
         # 🔍 CRITICAL DEBUG: Conversation system initialized
         system_debug = {

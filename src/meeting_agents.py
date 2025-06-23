@@ -246,27 +246,43 @@ class STTAgent(Agent):
             else:
                 print(f"📝 {segment.text} (conf: {segment.confidence:.3f}) [low confidence]")
             
-            # TEMPORARILY DISABLED: All async communication to fix crashes
-            # TODO: Implement proper thread-safe async communication
-
-            # For now, just store the transcript data locally
-            # The orchestration agent will collect it when the session ends
-            print(f"📝 Transcript collected: {segment.text[:50]}..." if len(segment.text) > 50 else f"📝 Transcript collected: {segment.text}")
-
-            # Store in session state for later collection
+            # 🚨 CRITICAL FIX: Re-enable thread-safe async communication
+            # Use the same pattern that works in web_api.py
+            
+            # Store in session state for later collection (keep this as backup)
             if not hasattr(self, '_collected_transcripts'):
                 self._collected_transcripts = []
             self._collected_transcripts.append(event.to_dict())
+            
+            # 🔧 CRITICAL FIX: Forward transcript to WebSocket if available
+            # This ensures real-time transcription reaches the frontend
+            if hasattr(self, 'websocket_manager') and self.websocket_manager:
+                try:
+                    # Try to broadcast the transcript to all connections
+                    import asyncio
+                    loop = asyncio.get_running_loop()
+                    asyncio.run_coroutine_threadsafe(
+                        self.websocket_manager.broadcast_live_transcript(
+                            text=segment.text,
+                            confidence=segment.confidence,
+                            speaker_id=segment.speaker_id
+                        ),
+                        loop
+                    )
+                    print(f"✅ Transcript forwarded to WebSocket: {segment.text[:50]}...")
+                except RuntimeError as re:
+                    print(f"⚠️ No event loop available for WebSocket forwarding: {re}")
+                    print(f"📝 Transcript (not forwarded): {segment.text}")
+                except Exception as e:
+                    print(f"❌ Error forwarding transcript to WebSocket: {e}")
+            
+            print(f"📝 Transcript collected: {segment.text[:50]}..." if len(segment.text) > 50 else f"📝 Transcript collected: {segment.text}")
         except Exception as e:
             print(f"❌ STTAgent: Error processing transcript segment: {e}")
 
     def _on_stt_error(self, error_type: str, error: Exception):
         """Callback from STT service for errors"""
         print(f"❌ STTAgent: STT service error ({error_type}): {error}")
-
-        # TEMPORARILY DISABLED: All async communication to fix crashes
-        # Just log the error for now
-        print(f"⚠️ STT Error logged: {error_type} - {error}")
 
         # Store error for later collection if needed
         if not hasattr(self, '_collected_errors'):
@@ -276,6 +292,28 @@ class STTAgent(Agent):
             "error_message": str(error),
             "timestamp": datetime.now().isoformat()
         })
+
+        # 🔧 CRITICAL FIX: Forward errors to WebSocket if available
+        # This ensures error visibility in the frontend
+        if hasattr(self, 'websocket_manager') and self.websocket_manager:
+            try:
+                import asyncio
+                loop = asyncio.get_running_loop()
+                asyncio.run_coroutine_threadsafe(
+                    self.websocket_manager.broadcast_system_status(
+                        status="error",
+                        message=f"STT Error: {error_type} - {str(error)}",
+                        details={"error_type": error_type, "error_message": str(error)}
+                    ),
+                    loop
+                )
+                print(f"✅ STT error forwarded to WebSocket: {error_type}")
+            except RuntimeError as re:
+                print(f"⚠️ No event loop available for error forwarding: {re}")
+            except Exception as e:
+                print(f"❌ Error forwarding STT error to WebSocket: {e}")
+        
+        print(f"⚠️ STT Error logged: {error_type} - {error}")
 
     # Public interface methods for external control
     def start_transcription(self):
