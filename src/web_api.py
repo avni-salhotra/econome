@@ -730,7 +730,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         logger.info(f"🎵 AUDIO_PIPELINE_START: {pipeline_context}")
 
         # STRATEGY A: WebM Chunk Buffering & Muxing for headerless chunks
-        if 'webm' in mime_type.lower() and 'opus' in mime_type.lower():
+        if 'webm' in mime_type.lower():
             try:
                 # Import the WebM muxing module
                 from .webm_muxer import get_or_create_buffer
