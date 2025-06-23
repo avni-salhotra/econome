@@ -382,6 +382,15 @@ class ProductionSTTServiceV2:
         # First, send the recognizer and streaming config (Speech V2 API pattern)
         # According to V2 docs: "the first message must contain recognizer and streaming_config"
         
+        # 🚨 CRITICAL: Safety check for None streaming config
+        if self._streaming_config is None:
+            print("❌ CRITICAL: streaming_config is None in generator!")
+            print("🔄 Attempting to reinitialize streaming config...")
+            self._initialize_streaming_config()
+            
+        if self._streaming_config is None:
+            raise ValueError("Failed to initialize streaming config - cannot proceed with streaming")
+        
         print(f"🔍 STREAMING_REQUEST: recognizer={self.recognizer}")
         print(f"🔍 STREAMING_REQUEST: config.language_codes={self._streaming_config.config.language_codes}")
         
