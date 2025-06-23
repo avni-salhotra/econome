@@ -332,11 +332,17 @@ async def receive_audio_chunk(connection_id: str, request: Request):
         audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
         mime_type = request.headers.get('content-type', 'audio/webm')
 
+    # Avoid duplicating 'audio/' prefix
+    if '/' in mime_type:
+        final_mime_type = mime_type  # e.g., 'audio/webm'
+    else:
+        final_mime_type = f"audio/{mime_type}"
+
     # Process the audio chunk
     result = await process_frontend_audio_chunk(
         connection_id,
         audio_base64,
-        f"audio/{mime_type}",
+        final_mime_type,
         conversation_system,
     )
 
