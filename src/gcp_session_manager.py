@@ -77,7 +77,6 @@ class GCPEphemeralSessionManager:
 
         if self.use_firestore:
             try:
-                import os
                 from google.oauth2 import service_account
 
                 # 1️⃣ Attempt to use Application Default Credentials first. In Cloud Run this
