@@ -586,11 +586,11 @@ class ActionItemAgent(Agent):
 class OrchestrationAgent(Agent):
     """Coordinates all agents and manages conversation sessions"""
     
-    def __init__(self):
+    def __init__(self, session_id: str):
         super().__init__("orchestration", "Multi-agent coordination and session management")
         
         # Session management
-        self.current_session = None
+        self.current_session = session_id
         self.session_state = {}
         self.connected_clients = []
         
@@ -948,16 +948,22 @@ class OrchestrationAgent(Agent):
 class ConversationIntelligenceSystem:
     """Main system orchestrator for real-time conversation intelligence - FIXED VERSION"""
 
-    def __init__(self, mock_mode: bool = False, **kwargs):
-        print("🏗️ Initializing Conversation Intelligence System...")
+    def __init__(self, session_id: str):
+        """Initializes the conversation intelligence system."""
+        self.session_id = session_id
+        self.stt_service = ProductionSTTServiceV2()
+        
+        # Correctly initialize the orchestration agent with the session_id
+        self.orchestration_agent = OrchestrationAgent(session_id=self.session_id)
+
+        # Set up the transcript callback
+        self.stt_service.set_transcript_callback(self.orchestration_agent.process_transcript_segment)
+
         self.loop = None
-        self.stt_service = None
         self.agents = {}
         self.is_running = False
-        self.mock_mode = mock_mode
-        # WebSocket functionality removed
-        self.kwargs = kwargs
-        self.session_id = None  # FIXED: Add session_id storage
+        self.mock_mode = False
+        self.kwargs = {}
         print("✅ Conversation Intelligence System initialized")
 
     def _connect_agents(self):
@@ -988,7 +994,7 @@ class ConversationIntelligenceSystem:
             "stt": STTAgent(self.stt_service, self.loop),
             "analysis": LiveAnalysisAgent(),
             "actions": ActionItemAgent(),
-            "orchestration": OrchestrationAgent()
+            "orchestration": self.orchestration_agent
         }
         self._connect_agents()
 
