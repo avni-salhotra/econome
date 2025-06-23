@@ -914,8 +914,32 @@ Would you like to try Demo Mode instead?`;
              */
             handleTranscriptUpdate(event) {
                 if (!event?.text) return;
+
                 const conf = typeof event.confidence === 'number' ? event.confidence : 0.9;
-                this.addLiveTranscript(event.text, conf);
+
+                // Final results are appended permanently; interim results are shown
+                // in grey italics and replaced on every new interim event.
+                if (event.is_final) {
+                    this.addLiveTranscript(event.text, conf);
+
+                    // Clear any interim display once a final has been committed
+                    if (this.interimEl) {
+                        this.interimEl.remove();
+                        this.interimEl = null;
+                    }
+                } else {
+                    // Create a single interim element if not present, otherwise update it
+                    if (!this.interimEl) {
+                        this.interimEl = document.createElement('div');
+                        this.interimEl.className = 'text-gray-500 italic';
+                        this.liveTranscriptEl.appendChild(this.interimEl);
+                    }
+                    this.interimEl.textContent = event.text;
+
+                    // Update confidence indicator live
+                    document.getElementById('confidenceIndicator').innerHTML =
+                        `<span class="text-blue-600">(listening... ${(conf * 100).toFixed(1)}%)</span>`;
+                }
             }
 
             /**
