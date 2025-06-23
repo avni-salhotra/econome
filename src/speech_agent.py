@@ -569,8 +569,15 @@ class ProductionSTTServiceV2:
                 
         except Exception as e:
             print(f"❌ Streaming response processing error: {e}")
+            # If the error is a GCP idle timeout (409) or any other
+            # streaming abort, mark the stream as inactive so the outer
+            # recognition loop can spin up a fresh session and we lose
+            # minimal audio.
+            with self._stream_lock:
+                self._stream_active = False
             if self._error_callback:
                 self._error_callback("streaming_response", e)
+            print("🔄 Stream marked inactive – will be restarted by main loop")
         finally:
             print("🏁 Streaming response processing finished")
     
@@ -835,12 +842,13 @@ class ProductionSTTServiceV2:
             print("🛑 Recording flag set to False")
 
             # STEP 2.5: 🚨 NEW: Gracefully shut down streaming session
-            # Give Speech-to-Text up to 500 ms to flush any final results so we
-            # don't lose the last word of an utterance.
-
-            grace_deadline = time.time() + 0.5  # 500 ms
-            while time.time() < grace_deadline and self._stream_active:
+            # Wait until the audio queue is empty AND at least 1.2 s have passed
+            grace_deadline = time.time() + 1.2  # 1200 ms
+            while (not self._audio_queue.empty()) and time.time() < grace_deadline:
                 time.sleep(0.05)
+
+            # Extra 200 ms to allow the API to flush its final hypothesis
+            time.sleep(0.2)
 
             with self._stream_lock:
                 if self._stream_active:

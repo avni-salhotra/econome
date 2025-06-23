@@ -739,8 +739,11 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                 # Import the WebM muxing module
                 from .webm_muxer import get_or_create_buffer
                 
-                # Get or create buffer with size=1 (process every chunk) and very short age
-                webm_buffer = get_or_create_buffer(connection_id, buffer_size=1, max_buffer_age_seconds=0.3)
+                # Get or create buffer with size=1 (process every chunk). Lower
+                # max_buffer_age_seconds so that even when the user pauses, we
+                # still emit a tiny chunk every ~150 ms, preventing the STT
+                # stream from timing-out due to 5-second inactivity.
+                webm_buffer = get_or_create_buffer(connection_id, buffer_size=1, max_buffer_age_seconds=0.15)
                 
                 # Add chunk to buffer and check if ready for processing
                 should_process, muxed_bytes = webm_buffer.add_chunk(audio_bytes, mime_type)

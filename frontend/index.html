@@ -220,7 +220,7 @@
                 this.isSafari = this.detectSafariBrowser();
 
                 // NEW: define chunk interval (ms) for MediaRecorder
-                this.chunkInterval = 100; // 100 ms chunks recommended by GCP best-practices
+                this.chunkInterval = 50; // 50 ms for lower latency, still under GCP limits
 
                 // Audio streaming properties
                 this.mediaRecorder = null;
