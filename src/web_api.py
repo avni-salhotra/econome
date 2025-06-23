@@ -12,7 +12,7 @@ import time
 from datetime import datetime
 from typing import Dict, Any, Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -21,7 +21,7 @@ import uvicorn
 # Import our existing system components
 from .meeting_agents import ConversationIntelligenceSystem
 from .gcp_session_manager import GCPEphemeralSessionManager
-from .websocket_manager import WebSocketManager
+# WebSocket functionality removed - using HTTP-only API
 
 # Load environment variables
 from dotenv import load_dotenv
@@ -51,7 +51,12 @@ app.add_middleware(
 
 # Initialize managers
 session_manager = GCPEphemeralSessionManager()
-websocket_manager = WebSocketManager()
+# WebSocket manager removed - using HTTP-only API
+
+# Replacement function for WebSocket calls
+async def log_websocket_message(connection_id: str, message: dict):
+    """Log WebSocket messages since WebSocket functionality is removed"""
+    logger.info(f"📤 WebSocket message (logged only): {connection_id} -> {message.get('type', 'unknown')}")
 
 # Store active conversation systems per connection
 active_conversations: Dict[str, ConversationIntelligenceSystem] = {}
@@ -157,7 +162,7 @@ async def debug_audio_status():
 async def get_system_status():
     """Get overall system status"""
     session_stats = await session_manager.get_session_stats()
-    websocket_stats = websocket_manager.get_connection_stats()
+    websocket_stats = {"total_connections": 0, "active_connections": 0}  # WebSocket removed
     
     return {
         "system_status": "operational",
@@ -242,242 +247,8 @@ async def simulate_conversation():
         "privacy_note": "This demo link will automatically expire and delete data in 24 hours."
     }
 
-# WebSocket endpoint for real-time conversation
-@app.websocket("/ws/conversation")
-async def conversation_websocket(websocket: WebSocket):
-    """
-    WebSocket endpoint for real-time conversation intelligence
-    """
-    connection_id = None
-    conversation_system = None
-    
-    try:
-        # Accept connection and get ID
-        connection_id = await websocket_manager.connect(websocket)
-        
-        # 🔍 CRITICAL DEBUG: WebSocket connection established
-        connection_debug = {
-            "timestamp": datetime.now().isoformat(),
-            "connection_id": connection_id,
-            "websocket_state": "connected",
-            "client_host": websocket.client.host if websocket.client else "unknown",
-            "client_port": websocket.client.port if websocket.client else "unknown"
-        }
-        logger.info(f"🔗 DEBUG_WEBSOCKET_CONNECTED: {connection_debug}")
-        
-        # Initialize conversation system for this connection
-        conversation_system = ConversationIntelligenceSystem()
-        active_conversations[connection_id] = conversation_system
-        
-        # 🚨 CRITICAL FIX: Start the conversation system to build agents
-        await conversation_system.start_system()
-        logger.info(f"🚀 Conversation system started for {connection_id}")
-        
-        # Set up transcript callback for real-time updates
-        def transcript_callback(segment):
-            """Forward transcript segments to WebSocket client"""
-            try:
-                # 🔍 DEBUG: Transcript callback triggered
-                transcript_debug = {
-                    "timestamp": datetime.now().isoformat(),
-                    "connection_id": connection_id,
-                    "segment": {
-                        "text": segment.text,
-                        "speaker_id": segment.speaker_id,
-                        "confidence": segment.confidence,
-                        "is_final": segment.is_final,
-                        "chunk_id": segment.chunk_id
-                    }
-                }
-                logger.debug(f"📝 DEBUG_TRANSCRIPT_CALLBACK: {transcript_debug}")
-                
-                # 🚨 CRITICAL FIX: Use asyncio.run_coroutine_threadsafe for thread-safe async calls
-                # The STT service calls this from a background thread, so we need to schedule
-                # the coroutine in the main event loop
-                try:
-                    # 🚨 CRITICAL FIX: Check if connection still exists before sending
-                    if connection_id not in websocket_manager.connections:
-                        logger.warning(f"⚠️ Connection {connection_id} no longer exists - skipping transcript")
-                        return
-                    
-                    # Check if connection is still active
-                    connection = websocket_manager.connections[connection_id]
-                    if not connection.is_active:
-                        logger.warning(f"⚠️ Connection {connection_id} is inactive - skipping transcript")
-                        return
-                    
-                    loop = asyncio.get_running_loop()
-                    future = asyncio.run_coroutine_threadsafe(
-                        websocket_manager.send_to_connection(
-                            connection_id,
-                            {
-                                "type": "live_transcript",
-                                "text": segment.text,
-                                "speaker_id": segment.speaker_id,
-                                "confidence": segment.confidence,
-                                "is_final": segment.is_final,
-                                "timestamp": segment.timestamp.isoformat(),
-                                "chunk_id": segment.chunk_id
-                            }
-                        ),
-                        loop
-                    )
-                    
-                    # 🚨 CRITICAL FIX: Get result to ensure any exceptions are caught
-                    success = future.result(timeout=1.0)  # 1 second timeout
-                    if success:
-                        logger.info(f"✅ Transcript sent to WebSocket: {segment.text[:50]}...")
-                    else:
-                        logger.warning(f"⚠️ Failed to send transcript to {connection_id}: {segment.text[:50]}...")
-                        
-                except RuntimeError as re:
-                    # If no event loop is running, we can't send the transcript
-                    logger.warning(f"⚠️ No event loop available for transcript callback: {re}")
-                    logger.info(f"📝 Transcript (not sent): {segment.text}")
-                except Exception as e:
-                    logger.warning(f"⚠️ Error sending transcript to {connection_id}: {e}")
-                    logger.info(f"📝 Transcript (not sent): {segment.text}")
-            except Exception as e:
-                logger.error(f"❌ Error in transcript callback: {e}")
-        
-        # Register callback with STT agent
-        stt_agent = conversation_system.get_agent("stt")
-        if stt_agent and hasattr(stt_agent, 'stt_service'):
-            # 🚨 CRITICAL FIX: Override the STT agent callback with our WebSocket callback
-            # This ensures transcripts reach the frontend in real-time
-            stt_agent.stt_service.set_transcript_callback(transcript_callback)
-            logger.info(f"✅ WebSocket transcript callback registered for {connection_id} (overrides STT agent callback)")
-            
-            # 🔍 CRITICAL DEBUG: Callback setup verification
-            callback_debug = {
-                "timestamp": datetime.now().isoformat(),
-                "connection_id": connection_id,
-                "stt_agent_type": type(stt_agent).__name__,
-                "stt_service_type": type(stt_agent.stt_service).__name__,
-                "callback_override": "websocket_callback_set"
-            }
-            logger.info(f"🔧 DEBUG_CALLBACK_SETUP: {callback_debug}")
-        else:
-            logger.warning(f"⚠️ STT agent not available for {connection_id}")
-            # 🔍 DEBUG: STT agent not available analysis
-            unavailable_debug = {
-                "timestamp": datetime.now().isoformat(),
-                "connection_id": connection_id,
-                "stt_agent_exists": stt_agent is not None,
-                "stt_agent_has_service": hasattr(stt_agent, 'stt_service') if stt_agent else False,
-                "conversation_system_type": type(conversation_system).__name__
-            }
-            logger.warning(f"🔍 DEBUG_STT_AGENT_UNAVAILABLE: {unavailable_debug}")
-        
-        # 🔍 CRITICAL DEBUG: Conversation system initialized
-        system_debug = {
-            "timestamp": datetime.now().isoformat(),
-            "connection_id": connection_id,
-            "system_id": conversation_system.session_id,
-            "stt_agent_available": stt_agent is not None,
-            "stt_service_available": hasattr(stt_agent, 'stt_service') if stt_agent else False
-        }
-        logger.info(f"🧠 DEBUG_CONVERSATION_SYSTEM_INIT: {system_debug}")
-        
-        # WebSocket message loop
-        while True:
-            try:
-                # Receive message from client
-                data = await websocket.receive_text()
-                
-                # 🔍 DEBUG: Raw message received
-                message_debug = {
-                    "timestamp": datetime.now().isoformat(),
-                    "connection_id": connection_id,
-                    "message_length": len(data),
-                    "message_preview": data[:200] + "..." if len(data) > 200 else data
-                }
-                logger.debug(f"📨 DEBUG_WEBSOCKET_MESSAGE_RECEIVED: {message_debug}")
-                
-                try:
-                    message = json.loads(data)
-                    
-                    # 🔍 CRITICAL DEBUG: Parsed message analysis
-                    parsed_debug = {
-                        "timestamp": datetime.now().isoformat(),
-                        "connection_id": connection_id,
-                        "action": message.get("action"),
-                        "message_keys": list(message.keys()),
-                        "audio_data_length": len(message.get("audio_data", "")) if "audio_data" in message else 0
-                    }
-                    logger.info(f"🔍 DEBUG_WEBSOCKET_MESSAGE_PARSED: {parsed_debug}")
-                    
-                    # Handle the message
-                    await handle_websocket_command(connection_id, message, conversation_system)
-                    
-                except json.JSONDecodeError as e:
-                    logger.error(f"❌ Invalid JSON message from {connection_id}: {e}")
-                    await websocket_manager.send_to_connection(connection_id, {
-                        "type": "error",
-                        "message": "Invalid JSON format"
-                    })
-                    
-            except WebSocketDisconnect:
-                logger.info(f"🔌 WebSocket disconnected: {connection_id}")
-                break
-            except Exception as e:
-                logger.error(f"❌ Error in WebSocket loop for {connection_id}: {e}")
-                # Send error to client but continue listening
-                try:
-                    await websocket_manager.send_to_connection(connection_id, {
-                        "type": "error",
-                        "message": f"Server error: {str(e)}"
-                    })
-                except:
-                    # If we can't send the error, the connection is probably dead
-                    break
-    
-    except Exception as e:
-        logger.error(f"❌ WebSocket connection error: {e}")
-        # 🔍 DEBUG: Connection error analysis
-        error_debug = {
-            "timestamp": datetime.now().isoformat(),
-            "connection_id": connection_id,
-            "error": {
-                "type": type(e).__name__,
-                "message": str(e)
-            }
-        }
-        logger.error(f"🔍 DEBUG_WEBSOCKET_CONNECTION_ERROR: {error_debug}")
-    
-    finally:
-        # Cleanup on disconnect
-        if connection_id:
-            # 🔍 CRITICAL DEBUG: Connection cleanup
-            cleanup_debug = {
-                "timestamp": datetime.now().isoformat(),
-                "connection_id": connection_id,
-                "had_conversation_system": conversation_system is not None
-            }
-            logger.info(f"🧹 DEBUG_WEBSOCKET_CLEANUP_START: {cleanup_debug}")
-            
-            websocket_manager.disconnect(connection_id)
-            
-            if conversation_system:
-                try:
-                    conversation_system.stop_system()
-                    logger.info(f"🛑 Stopped conversation system for {connection_id}")
-                except Exception as e:
-                    logger.error(f"❌ Error stopping conversation system for {connection_id}: {e}")
-            
-            # Remove from active conversations
-            if connection_id in active_conversations:
-                del active_conversations[connection_id]
-                logger.info(f"🧹 Removed {connection_id} from active conversations")
-            
-            # 🔍 FINAL DEBUG: Cleanup completed
-            final_debug = {
-                "timestamp": datetime.now().isoformat(),
-                "connection_id": connection_id,
-                "cleanup_completed": True,
-                "active_conversations_remaining": len(active_conversations)
-            }
-            logger.info(f"✅ DEBUG_WEBSOCKET_CLEANUP_COMPLETED: {cleanup_debug}")
+# WebSocket endpoint removed - using HTTP-only API
+# Original WebSocket functionality has been converted to HTTP endpoints
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
     """
@@ -678,14 +449,9 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         audio_bytes = base64.b64decode(audio_data)
 
         # OBSERVABILITY: Get connection stream tracking info
-        connection = websocket_manager.connections.get(connection_id)
-        if connection:
-            connection_stream_id = connection.connection_stream_id
-            chunk_seq_number = connection.get_next_chunk_sequence()
-        else:
-            connection_stream_id = "unknown"
-            chunk_seq_number = 0
-            logger.warning(f"⚠️ Connection {connection_id} not found in websocket_manager")
+        # WebSocket functionality removed - using direct HTTP API
+        connection_stream_id = f"http_{connection_id}"
+        chunk_seq_number = 0
 
         # STRUCTURED LOGGING: Audio pipeline entry point with observability
         pipeline_context = {
@@ -969,8 +735,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     logger.info(f"✅ AUDIO_PIPELINE_STT_QUEUE_SUCCESS: {success_context}")
 
                     # OBSERVABILITY: Record successful chunk processing
-                    if connection:
-                        connection.record_chunk_processed(success=True)
+                    # Connection tracking removed with WebSocket functionality
                 else:
                     # STRUCTURED LOGGING: Queue failure
                     failure_context = {
@@ -982,8 +747,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     logger.warning(f"⚠️ AUDIO_PIPELINE_STT_QUEUE_FAILURE: {failure_context}")
 
                     # OBSERVABILITY: Record failed chunk processing
-                    if connection:
-                        connection.record_chunk_processed(success=False)
+                    # Connection tracking removed with WebSocket functionality
             else:
                 # Fallback to direct access if interface not available
                 if hasattr(stt_service, '_audio_queue'):
@@ -1022,23 +786,10 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     logger.debug(f"🔍 Queue interface available: {hasattr(stt_agent.stt_service, 'queue_audio_chunk')}")
 
             # OBSERVABILITY: Record failed chunk processing
-            if connection:
-                connection.record_chunk_processed(success=False)
+            # Connection tracking removed with WebSocket functionality
 
         # OBSERVABILITY: Check for unprocessed chunk alerts
-        if connection:
-            unprocessed_count = connection.get_unprocessed_chunk_count(60)  # 60 second window
-            if unprocessed_count >= 5:  # Alert threshold
-                alert_context = {
-                    **pipeline_context,
-                    "pipeline_stage": "unprocessed_chunk_alert",
-                    "unprocessed_chunks_60s": unprocessed_count,
-                    "total_chunks_processed": connection.total_chunks_processed,
-                    "total_chunks_dropped": connection.total_chunks_dropped,
-                    "alert_threshold": 5,
-                    "window_seconds": 60
-                }
-                logger.error(f"🚨 UNPROCESSED_CHUNK_ALERT: {alert_context}")
+        # Connection tracking removed with WebSocket functionality
 
     except Exception as e:
         logger.error(f"❌ Error processing frontend audio chunk for {connection_id}: {e}")
@@ -1068,7 +819,8 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
             error_response["debug_info"]["suggestions"].append("Audio format incompatibility detected")
             error_response["debug_info"]["suggestions"].append("Try using a different browser or Demo Mode")
 
-        await websocket_manager.send_to_connection(connection_id, error_response)
+        # WebSocket functionality removed - error logged instead of sent
+        logger.error(f"Audio processing error for {connection_id}: {error_response}")
 
 async def handle_websocket_command(connection_id: str, command: Dict[str, Any], conversation_system: ConversationIntelligenceSystem):
     """Handle WebSocket commands from frontend"""
@@ -1183,13 +935,10 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             }
             logger.info(f"📤 DEBUG_START_RECORDING_RESPONSE: {response_debug}")
 
-            await websocket_manager.send_to_connection(connection_id, response_data)
+            await log_websocket_message(connection_id, response_data)
 
             if result.get("success"):
-                await websocket_manager.broadcast_system_status(
-                    "recording",
-                    f"Recording started for {browser} session {connection_id[:8]}... (mode: {mode})"
-                )
+                logger.info(f"🎤 Recording started for {browser} session {connection_id[:8]}... (mode: {mode})")
         
         elif action == "audio_chunk":
             # Handle real-time audio chunks from frontend
@@ -1270,7 +1019,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             result = await conversation_system.stop_conversation()
 
             # Send response
-            await websocket_manager.send_to_connection(connection_id, {
+            await log_websocket_message(connection_id, {
                 "type": "recording_stopped",
                 "success": result.get("success", True),
                 "message": result.get("message", "Recording stopped"),
@@ -1280,15 +1029,12 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             })
 
             if result.get("success", True):
-                await websocket_manager.broadcast_system_status(
-                    "processing",
-                    f"Processing conversation for session {connection_id[:8]}..."
-                )
+                logger.info(f"🛑 Processing conversation for session {connection_id[:8]}...")
 
         elif action == "get_status":
             # Get system status
             status = conversation_system.get_conversation_status()
-            await websocket_manager.send_to_connection(connection_id, {
+            await log_websocket_message(connection_id, {
                 "type": "status_update",
                 "status": status,
                 "timestamp": datetime.now().isoformat()
@@ -1304,7 +1050,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             }
             logger.warning(f"⚠️ DEBUG_UNKNOWN_ACTION: {unknown_debug}")
 
-            await websocket_manager.send_to_connection(connection_id, {
+            await log_websocket_message(connection_id, {
                 "type": "error",
                 "message": f"Unknown action: {action}",
                 "timestamp": datetime.now().isoformat()
@@ -1326,7 +1072,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
         }
         logger.error(f"🔍 DEBUG_COMMAND_ERROR: {error_debug}")
         
-        await websocket_manager.send_to_connection(connection_id, {
+        await log_websocket_message(connection_id, {
             "type": "error",
             "message": f"Command error: {str(e)}",
             "action": action,
@@ -1360,15 +1106,14 @@ async def periodic_state_dump():
         try:
             await asyncio.sleep(60)  # 60 second interval
 
-            # Get all active conversation systems
+            # WebSocket functionality removed - using active conversations dict
             active_systems = []
-            for connection_id, connection in websocket_manager.connections.items():
-                if hasattr(connection, 'conversation_session_id') and connection.conversation_session_id:
+            for connection_id, conversation_system in active_conversations.items():
+                if conversation_system and hasattr(conversation_system, 'session_id'):
                     system_state = {
                         "connection_id": connection_id,
-                        "connection_stream_id": connection.connection_stream_id,
-                        "session_id": connection.conversation_session_id,
-                        "connection_info": connection.get_connection_info()
+                        "session_id": conversation_system.session_id,
+                        "system_type": type(conversation_system).__name__
                     }
                     active_systems.append(system_state)
 
@@ -1376,11 +1121,11 @@ async def periodic_state_dump():
             state_dump_context = {
                 "pipeline_stage": "periodic_state_dump",
                 "dump_timestamp": datetime.now().timestamp() * 1000,
-                "active_connections": len(websocket_manager.connections),
+                "active_connections": len(active_conversations),
                 "active_systems": len(active_systems),
-                "websocket_manager_state": {
-                    "total_connections": len(websocket_manager.connections),
-                    "connection_details": active_systems
+                "conversation_systems_state": {
+                    "total_systems": len(active_conversations),
+                    "system_details": active_systems
                 }
             }
 
@@ -1406,7 +1151,7 @@ if __name__ == "__main__":
     print("🚀 Starting Econome Web API...")
     print(f"📡 Server will run on {host}:{port}")
     print(f"🌐 API docs available at http://localhost:{port}/docs")
-    print(f"🔗 WebSocket endpoint: ws://localhost:{port}/ws/conversation")
+    print(f"🏗️ Architecture: HTTP-only (WebSocket removed)")
     print(f"🔧 Environment: {environment}")
 
     uvicorn.run(

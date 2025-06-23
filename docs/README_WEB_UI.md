@@ -14,7 +14,7 @@ pip install -r requirements.txt
 ### **2. Test the System**
 ```bash
 # Test all components
-python test_web_system.py
+python -m pytest tests/ -v
 ```
 
 ### **3. Start Web Server**
@@ -137,11 +137,11 @@ gcloud firestore databases create --region=us-central1
 ### **Local Testing**
 ```bash
 # Test all components
-python test_web_system.py
+python -m pytest tests/ -v
 
 # Test specific components
 python gcp_session_manager.py
-python websocket_manager.py
+# Note: WebSocket functionality has been removed
 ```
 
 ### **Web Interface Testing**

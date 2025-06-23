@@ -148,7 +148,7 @@ econome/
 ├── 🧪 Testing
 │   ├── tests/                 # Test suite
 │   │   ├── __init__.py        # Test package initialization
-│   │   └── test_web_system.py # System integration tests
+│   │   └── test_e2e_system.py # End-to-end system tests (HTTP API)
 │
 ├── 🌐 Frontend
 │   └── frontend/
@@ -338,7 +338,7 @@ python run.py --test
 python -m pytest tests/
 
 # Test web system integration
-python tests/test_web_system.py
+python -m pytest tests/ -v
 
 # Start interactive demo
 python run.py

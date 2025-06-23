@@ -11,8 +11,7 @@ import json
 import pytest
 import requests
 import asyncio
-import websockets
-import ssl
+# WebSocket functionality removed - security tests updated for HTTP-only API
 from unittest.mock import patch
 
 # Add src to path for imports
@@ -27,15 +26,7 @@ class TestSecurity:
         """Get base URL for testing"""
         return os.getenv('TEST_BASE_URL', 'http://localhost:8080')
     
-    @pytest.fixture
-    def websocket_url(self):
-        """Get WebSocket URL for testing"""
-        base = os.getenv('TEST_BASE_URL', 'ws://localhost:8080')
-        if base.startswith('http://'):
-            base = base.replace('http://', 'ws://')
-        elif base.startswith('https://'):
-            base = base.replace('https://', 'wss://')
-        return f"{base}/ws/conversation"
+    # WebSocket functionality removed - no longer needed
     
     def test_no_hardcoded_secrets(self):
         """Test that no hardcoded secrets exist in the codebase"""
@@ -79,57 +70,7 @@ class TestSecurity:
                 # Skip files that can't be read
                 continue
     
-    def test_input_validation_websocket(self, websocket_url):
-        """Test WebSocket input validation"""
-        async def test_invalid_inputs():
-            try:
-                ssl_context = None
-                if websocket_url.startswith('wss://'):
-                    ssl_context = ssl.create_default_context()
-                
-                async with websockets.connect(websocket_url, ssl=ssl_context) as websocket:
-                    # Test invalid JSON
-                    await websocket.send("invalid json")
-                    
-                    # Test oversized message
-                    large_message = json.dumps({
-                        'type': 'test',
-                        'data': 'x' * 1000000  # 1MB of data
-                    })
-                    
-                    try:
-                        await websocket.send(large_message)
-                    except Exception:
-                        # Expected to fail or be rejected
-                        pass
-                    
-                    # Test malformed message structure
-                    malformed_messages = [
-                        '{"type": "test"}',  # Missing data
-                        '{"data": "test"}',  # Missing type
-                        '{"type": "", "data": "test"}',  # Empty type
-                        '{"type": null, "data": "test"}',  # Null type
-                    ]
-                    
-                    for msg in malformed_messages:
-                        await websocket.send(msg)
-                        
-                        # Should receive error or connection should handle gracefully
-                        try:
-                            response = await asyncio.wait_for(websocket.recv(), timeout=1.0)
-                            response_data = json.loads(response)
-                            # If we get a response, it should be an error
-                            if 'type' in response_data:
-                                assert response_data['type'] == 'error'
-                        except (asyncio.TimeoutError, json.JSONDecodeError):
-                            # No response or invalid response is acceptable
-                            pass
-                            
-            except Exception as e:
-                # Connection errors are acceptable for security tests
-                pass
-        
-        asyncio.run(test_invalid_inputs())
+    # WebSocket input validation test removed - functionality no longer exists
     
     def test_http_security_headers(self, base_url):
         """Test HTTP security headers"""

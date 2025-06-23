@@ -202,7 +202,7 @@ class ProductionSTTServiceV2:
                 )
                 self._has_credentials = True
 
-                # OPTIMIZED: Use regional recognizer for better performance
+                # Speech V2 uses recognizers - set up the recognizer path
                 self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
 
                 print("✅ Google Cloud Speech V2 client initialized (us-central1 region)")
@@ -226,7 +226,7 @@ class ProductionSTTServiceV2:
             return
             
         try:
-            # 🎯 CRITICAL: Proper streaming configuration for real-time transcription
+            # 🎯 CRITICAL: Proper Speech V2 streaming configuration
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
                 config=speech_v2.RecognitionConfig(
                     explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
@@ -234,16 +234,17 @@ class ProductionSTTServiceV2:
                         sample_rate_hertz=self.sample_rate,
                         audio_channel_count=1,
                     ),
-                    language_codes=["en-US"],
-                    model="latest_long",  # 🎯 OPTIMIZED: For continuous conversations
+                    language_codes=["en-US"],  # V2 uses language_codes (plural)
+                    model="latest_long",
                     features=speech_v2.RecognitionFeatures(
                         enable_automatic_punctuation=True,
                         enable_word_time_offsets=True,
-                        enable_word_confidence=True
-                    )
+                        enable_word_confidence=True,
+                    ),
                 ),
-                interim_results=True,  # 🚨 CRITICAL: Enable real-time interim results
-                single_utterance=False,  # 🚨 CRITICAL: Keep stream open for continuous conversation
+                streaming_features=speech_v2.StreamingRecognitionFeatures(
+                    interim_results=True,  # 🚨 CRITICAL: Enable real-time interim results
+                )
             )
             
             print("✅ Streaming recognition configuration initialized")
@@ -366,9 +367,13 @@ class ProductionSTTServiceV2:
             raise
     
     def _audio_chunk_generator(self):
-        """🚨 CRITICAL: Generator that yields audio chunks for streaming"""
-        # First, send the streaming config
-        yield speech_v2.StreamingRecognizeRequest(streaming_config=self._streaming_config)
+        """🚨 CRITICAL: Generator that yields audio chunks for streaming (Speech V2 pattern)"""
+        # First, send the recognizer and streaming config (Speech V2 API pattern)
+        # According to V2 docs: "the first message must contain recognizer and streaming_config"
+        yield speech_v2.StreamingRecognizeRequest(
+            recognizer=self.recognizer,
+            streaming_config=self._streaming_config
+        )
         
         # Then continuously yield audio chunks
         while self._is_recording and self._stream_active:
@@ -437,12 +442,8 @@ class ProductionSTTServiceV2:
                 if not transcript_text:
                     continue
                 
-                # Extract speaker information
-                speaker_id = "Speaker_1"  # Default
-                if hasattr(alternative, 'words') and alternative.words:
-                    first_word = alternative.words[0]
-                    if hasattr(first_word, 'speaker_label') and first_word.speaker_label:
-                        speaker_id = f"Speaker_{first_word.speaker_label}"
+                # For MVP: Single speaker mode (no diarization)
+                speaker_id = "Speaker_1"
                 
                 # Create transcript segment
                 segment = TranscriptSegment(
