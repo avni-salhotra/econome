@@ -207,18 +207,16 @@ jobs:
     - name: "⏱️ Wait for deployment to be ready"
       run: |
         echo "⏱️ Waiting for service to be ready..."
-        sleep 10
-        
-        # Check if service is responding
-        SERVICE_URL="${{ steps.get-url.outputs.url }}"
-        for i in {1..6}; do
+        # Cloud Run cold-starts can take ~60 s on a fresh revision, so poll
+        # for up to 2 minutes (12 × 10 s) before giving up.
+        for i in {1..12}; do
           if curl -f -s "$SERVICE_URL/health" > /dev/null; then
-            echo "✅ Service is responding"
+            echo "✅ Service is responding (attempt $i)"
             break
-          else
-            echo "⏳ Attempt $i/6: Service not ready yet, waiting..."
-            sleep 5
           fi
+
+          echo "⏳ Attempt $i/12: not ready yet, waiting 10s..."
+          sleep 10
         done
 
     - name: "📋 Deployment summary"
