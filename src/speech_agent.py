@@ -223,24 +223,27 @@ class ProductionSTTServiceV2:
             return
             
         try:
-            # 🎯 CRITICAL: Match the official Speech V2 documentation pattern exactly
+            # 🎯 CRITICAL: Use the simplest working Speech V2 pattern
+            # Based on official documentation examples
             recognition_config = speech_v2.RecognitionConfig(
                 auto_decoding_config=speech_v2.AutoDetectDecodingConfig(),
                 language_codes=["en-US"],  # This must never be empty
-                model="long",  # Match official documentation
-                features=speech_v2.RecognitionFeatures(
-                    enable_automatic_punctuation=True,
-                    enable_word_time_offsets=True,
-                    enable_word_confidence=True,
-                ),
+                model="latest_long",  # Try latest_long instead of just "long"
             )
+            
+            # Debug: Print the config before using it
+            print(f"🔍 RecognitionConfig created with language_codes: {recognition_config.language_codes}")
+            print(f"🔍 RecognitionConfig model: {recognition_config.model}")
             
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
                 config=recognition_config,
                 streaming_features=speech_v2.StreamingRecognitionFeatures(
-                    interim_results=True,  # 🚨 CRITICAL: Enable real-time interim results
+                    interim_results=True,
                 )
             )
+            
+            # Debug: Verify the final streaming config
+            print(f"🔍 StreamingConfig created with language_codes: {self._streaming_config.config.language_codes}")
             
             # Validate the configuration
             if not self._streaming_config.config.language_codes:
