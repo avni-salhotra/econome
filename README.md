@@ -94,7 +94,7 @@ graph LR
 | Component | Technology | Purpose |
 |-----------|------------|---------|
 | **Frontend** | HTML5 + JavaScript + Tailwind CSS | Responsive web interface |
-| **Backend** | FastAPI + WebSockets | Real-time API & communication |
+| **Backend** | FastAPI + HTTP + SSE | Real-time API & communication |
 | **Speech Processing** | Google Cloud Speech V2 | Real-time transcription |
 | **AI Analysis** | Gemini 1.5 Pro | Parallel summary + action extraction |
 | **Storage** | Google Firestore with TTL | Ephemeral session data |
@@ -106,7 +106,7 @@ graph LR
 ## ✨ Key Features
 
 ### 🎯 **Core Capabilities**
-- **🎤 Real-time Recording** - Live audio capture with WebSocket streaming
+- **🎤 Real-time Recording** - Live audio capture with HTTP chunked streaming
 - **📝 Live Transcription** - Google Cloud Speech V2 with 2-second chunks
 - **🧠 Parallel AI Processing** - Simultaneous summary + action item extraction
 - **📋 Smart Action Items** - Categorized todos, communications, and reminders
@@ -122,7 +122,7 @@ graph LR
 
 ### ⚡ **Performance**
 - **Multi-agent Architecture** - Coordinated parallel processing
-- **Real-time WebSockets** - Live transcription streaming
+- **Real-time HTTP/SSE** - Live transcription streaming
 - **Optimized Chunks** - 2-second audio segments for quality
 - **Cloud-native** - Serverless scaling on Google Cloud Run
 

@@ -519,701 +519,139 @@ Would you like to try Demo Mode instead?`;
             }
 
             async startRecording() {
-                // 🔍 COMPREHENSIVE DEBUG LOGGING FOR AUDIO CAPTURE ISSUE
-                const debugContext = {
-                    timestamp: Date.now(),
-                    isRecording: this.isRecording,
-                    mediaRecorder: this.mediaRecorder ? {
-                        state: this.mediaRecorder.state,
-                        mimeType: this.mediaRecorder.mimeType,
-                        isInstanceof: this.mediaRecorder instanceof MediaRecorder
-                    } : null,
-                    audioStream: this.audioStream ? {
-                        active: this.audioStream.active,
-                        trackCount: this.audioStream.getTracks().length,
-                        audioTrackCount: this.audioStream.getAudioTracks().length,
-                        tracks: this.audioStream.getTracks().map(track => ({
-                            kind: track.kind,
-                            enabled: track.enabled,
-                            muted: track.muted,
-                            readyState: track.readyState,
-                            label: track.label
-                        }))
-                    } : null,
-                    websocket: this.ws ? {
-                        readyState: this.ws.readyState,
-                        url: this.ws.url,
-                        protocol: this.ws.protocol
-                    } : null,
-                    environment: this.environment,
-                    connection_id: this.connectionId
-                };
-                console.log('🔍 DEBUG_START_RECORDING_INITIAL_STATE:', debugContext);
+                if (this.isRecording) {
+                    console.log('Already recording');
+                    return;
+                }
 
-                // Environment-aware recording with proper cloud mode detection
+                if (!this.connectionId) {
+                    const started = await this.startConversation();
+                    if (!started) return;
+                }
+
                 try {
-                    if (this.isRecording) {
-                        console.log('⚠️ Already recording - EARLY EXIT');
-                        return;
-                    }
-
-                    const isSafari = this.detectSafariBrowser();
-                    console.log(`🔍 Browser detection: Safari=${isSafari}, UserAgent=${navigator.userAgent}`);
-                    console.log(`🌍 Environment: Cloud=${this.environment.cloud_run_mode}, Recommended=${this.environment.recommended_mode}`);
-
-                    // Check WebSocket connection
-                    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
-                        throw new Error('WebSocket connection not available');
-                    }
-
-                    // 🔍 CRITICAL DEBUG: Pre-cleanup state
-                    const preCleanupDebug = {
-                        timestamp: Date.now(),
-                        existing_mediaRecorder: this.mediaRecorder ? {
-                            state: this.mediaRecorder.state,
-                            stream: this.mediaRecorder.stream ? {
-                                active: this.mediaRecorder.stream.active,
-                                id: this.mediaRecorder.stream.id
-                            } : null
-                        } : null,
-                        existing_audioStream: this.audioStream ? {
-                            active: this.audioStream.active,
-                            id: this.audioStream.id,
-                            trackCount: this.audioStream.getTracks().length
-                        } : null
-                    };
-                    console.log('🔍 DEBUG_PRE_CLEANUP_STATE:', preCleanupDebug);
-
-                    // 🔍 CRITICAL FIX: Ensure complete cleanup before starting new session
-                    console.log('🧹 AGGRESSIVE_CLEANUP: Starting complete cleanup...');
-                    this.cleanupAudioResources();
-
-                    // 🔍 CRITICAL DEBUG: Post-cleanup state verification
-                    const postCleanupDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_after_cleanup: this.mediaRecorder,
-                        audioStream_after_cleanup: this.audioStream,
-                        isRecording_after_cleanup: this.isRecording
-                    };
-                    console.log('🔍 DEBUG_POST_CLEANUP_STATE:', postCleanupDebug);
-
-                    this.updateStatus('processing', 'Requesting microphone access...');
-
-                    // Environment-aware recording mode selection
-                    if (this.environment.cloud_run_mode || this.environment.recommended_mode === 'frontend_streaming') {
-                        console.log('☁️ Using frontend streaming mode for cloud environment');
-                        await this.startFrontendStreamingRecording(isSafari);
-                    } else {
-                        console.log('🖥️ Using browser-specific recording for local environment');
-                        // Try Safari-compatible approach first
-                        if (isSafari) {
-                            await this.startSafariRecording();
-                        } else {
-                            await this.startStandardRecording();
-                        }
-                    }
-
-                    // 🔍 CRITICAL DEBUG: Post-start state verification
-                    const postStartDebug = {
-                        timestamp: Date.now(),
-                        isRecording: this.isRecording,
-                        mediaRecorder: this.mediaRecorder ? {
-                            state: this.mediaRecorder.state,
-                            mimeType: this.mediaRecorder.mimeType,
-                            stream: this.mediaRecorder.stream ? {
-                                active: this.mediaRecorder.stream.active,
-                                id: this.mediaRecorder.stream.id,
-                                trackCount: this.mediaRecorder.stream.getTracks().length
-                            } : null
-                        } : null,
-                        audioStream: this.audioStream ? {
-                            active: this.audioStream.active,
-                            id: this.audioStream.id,
-                            trackCount: this.audioStream.getTracks().length
-                        } : null
-                    };
-                    console.log('🔍 DEBUG_POST_START_STATE:', postStartDebug);
-
-                } catch (error) {
-                    console.error('🚨 Recording start error:', error);
-                    
-                    // 🔍 CRITICAL DEBUG: Error state analysis
-                    const errorDebug = {
-                        timestamp: Date.now(),
-                        error: {
-                            name: error.name,
-                            message: error.message,
-                            stack: error.stack
-                        },
-                        mediaRecorder: this.mediaRecorder ? {
-                            state: this.mediaRecorder.state
-                        } : null,
-                        audioStream: this.audioStream ? {
-                            active: this.audioStream.active
-                        } : null,
-                        websocket: this.ws ? {
-                            readyState: this.ws.readyState
-                        } : null
-                    };
-                    console.log('🔍 DEBUG_ERROR_STATE:', errorDebug);
-
-                    this.updateStatus('error', 'Failed to start recording');
-                    this.cleanupAudioResources();
-
-                    // Enhanced error handling with Safari-specific guidance
-                    if (error.name === 'NotAllowedError') {
-                        if (this.isSafari) {
-                            this.showSafariPermissionDialog();
-                        } else {
-                            alert('🎤 Microphone access denied. Please allow microphone access and try again.\n\n💡 Or try "Demo Mode" to see the full system working!');
-                        }
-                    } else if (error.name === 'NotFoundError') {
-                        alert('🎤 No microphone found. Please connect a microphone and try again.\n\n💡 Or try "Demo Mode" to see the full system working!');
-                    } else if (error.name === 'NotReadableError') {
-                        if (this.isSafari) {
-                            alert('🎤 Safari microphone error: Another application may be using the microphone.\n\nPlease:\n1. Close other apps using the microphone\n2. Refresh this page\n3. Try again\n\n💡 Or try "Demo Mode" to see the full system working!');
-                        } else {
-                            alert('🎤 Microphone is being used by another application. Please close other apps and try again.\n\n💡 Or try "Demo Mode" to see the full system working!');
-                        }
-                    } else {
-                        alert(`🎤 Recording error: ${error.message}\n\nTry refreshing the page and allowing microphone access.\n\n💡 Or try "Demo Mode" to see the full system working!`);
-                    }
-                }
-            }
-
-            async startFrontendStreamingRecording(isSafari) {
-                console.log('☁️ Starting frontend streaming recording for cloud environment...');
-
-                // Cloud-optimized constraints
-                const constraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                        sampleRate: 16000,
-                        channelCount: 1
-                    }
-                };
-
-                // Get microphone stream
-                this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('✅ Cloud mode microphone stream obtained');
-
-                // Start real-time audio streaming optimized for cloud
-                await this.startAudioStreaming();
-
-                // Update UI to recording state
-                this.isRecording = true;
-                this.updateStatus('recording', 'Recording - Cloud mode active');
-                this.startBtn.disabled = true;
-                this.stopBtn.disabled = false;
-                this.liveTranscript = '';
-                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">☁️ Cloud Mode: Processing your audio in real-time...</div>';
-                this.resultsContainer.classList.add('hidden');
-            }
-
-            async startSafariRecording() {
-                console.log('🧭 Starting Safari-compatible recording...');
-
-                // Safari-specific constraints
-                const constraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                        sampleRate: 16000,
-                        channelCount: 1
-                    }
-                };
-
-                // Get microphone stream for Safari
-                this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
-                console.log('✅ Safari microphone stream obtained');
-
-                // Start real-time audio streaming for Safari too
-                await this.startAudioStreaming();
-
-                // Update UI to recording state
-                this.isRecording = true;
-                this.updateStatus('recording', 'Recording - Speak clearly');
-                this.startBtn.disabled = true;
-                this.stopBtn.disabled = false;
-                this.liveTranscript = '';
-                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">🧭 Safari: Listening to your microphone... speak clearly and naturally</div>';
-                this.resultsContainer.classList.add('hidden');
-            }
-
-            async startStandardRecording() {
-                console.log('🌐 Starting standard browser recording...');
-
-                // Check if microphone is available
-                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-                    throw new Error('Microphone access not supported in this browser');
-                }
-
-                // Standard browser constraints optimized for speech recognition
-                const constraints = {
-                    audio: {
-                        echoCancellation: true,
-                        noiseSuppression: true,
-                        autoGainControl: true,
-                        sampleRate: 16000,  // Optimal for speech recognition
-                        channelCount: 1     // Mono audio
-                    }
-                };
-
-                console.log('🎤 Requesting microphone with constraints:', constraints);
-
-                // Get microphone stream
-                this.audioStream = await navigator.mediaDevices.getUserMedia(constraints);
-
-                console.log('✅ Microphone stream obtained:', {
-                    active: this.audioStream.active,
-                    tracks: this.audioStream.getTracks().length,
-                    audioTracks: this.audioStream.getAudioTracks().length
-                });
-
-                // Start real-time audio streaming to backend
-                await this.startAudioStreaming();
-
-                // Update UI to recording state
-                this.isRecording = true;
-                this.updateStatus('recording', 'Recording - Speak clearly');
-                this.startBtn.disabled = true;
-                this.stopBtn.disabled = false;
-                this.liveTranscript = '';
-                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">🎤 Listening to your microphone... speak clearly and naturally</div>';
-                this.resultsContainer.classList.add('hidden');
-            }
-
-            async startAudioStreaming() {
-                console.log('🎵 Starting real-time audio streaming...');
-
-                // 🔍 CRITICAL DEBUG: Pre-streaming state check
-                const preStreamingDebug = {
-                    timestamp: Date.now(),
-                    audioStream: this.audioStream ? {
-                        active: this.audioStream.active,
-                        id: this.audioStream.id,
-                        trackCount: this.audioStream.getTracks().length,
-                        tracks: this.audioStream.getTracks().map(track => ({
-                            kind: track.kind,
-                            enabled: track.enabled,
-                            muted: track.muted,
-                            readyState: track.readyState,
-                            label: track.label
-                        }))
-                    } : null,
-                    existing_mediaRecorder: this.mediaRecorder ? {
-                        state: this.mediaRecorder.state,
-                        stream_id: this.mediaRecorder.stream ? this.mediaRecorder.stream.id : null
-                    } : null,
-                    websocket: this.ws ? {
-                        readyState: this.ws.readyState,
-                        url: this.ws.url
-                    } : null
-                };
-                console.log('🔍 DEBUG_PRE_STREAMING_STATE:', preStreamingDebug);
-
-                // Notify backend that we're starting frontend audio streaming
-                const recordingMode = this.environment.cloud_run_mode ? 'frontend_streaming' : 'backend';
-                const startMessage = {
-                    action: 'start_recording',
-                    browser: this.isSafari ? 'safari' : 'standard',
-                    mode: recordingMode,
-                    streaming: true,
-                    sample_rate: 16000,
-                    channels: 1,
-                    environment: this.environment
-                };
-                
-                console.log('🔍 DEBUG_SENDING_START_MESSAGE:', startMessage);
-                this.ws.send(JSON.stringify(startMessage));
-
-                // Set up MediaRecorder for real-time audio streaming
-                const mimeType = this.getSupportedMimeType();
-                console.log('🎤 Using audio format:', mimeType);
-
-                // 🔍 CRITICAL: Clean up any existing MediaRecorder before creating new one
-                if (this.mediaRecorder) {
-                    console.log('🧹 CLEANUP: Disposing existing MediaRecorder before creating new one');
-                    try {
-                        if (this.mediaRecorder.state !== 'inactive') {
-                            this.mediaRecorder.stop();
-                        }
-                    } catch (e) {
-                        console.warn('⚠️ Error stopping existing MediaRecorder:', e);
-                    }
-                    this.mediaRecorder = null;
-                }
-
-                // Create new MediaRecorder instance
-                try {
-                    this.mediaRecorder = new MediaRecorder(this.audioStream, {
-                        mimeType: mimeType,
-                        audioBitsPerSecond: 16000  // Optimize for speech
+                    const stream = await navigator.mediaDevices.getUserMedia({ 
+                        audio: {
+                            sampleRate: 16000,
+                            channelCount: 1,
+                            echoCancellation: true,
+                            noiseSuppression: true
+                        } 
                     });
-                    
-                    // 🔍 CRITICAL DEBUG: MediaRecorder creation success
-                    const mediaRecorderDebug = {
-                        timestamp: Date.now(),
-                        state: this.mediaRecorder.state,
-                        mimeType: this.mediaRecorder.mimeType,
-                        stream: this.mediaRecorder.stream ? {
-                            active: this.mediaRecorder.stream.active,
-                            id: this.mediaRecorder.stream.id,
-                            trackCount: this.mediaRecorder.stream.getTracks().length
-                        } : null,
-                        instance_id: Math.random().toString(36).substr(2, 9) // Unique ID for this instance
+
+                    this.mediaRecorder = new MediaRecorder(stream, {
+                        mimeType: 'audio/webm;codecs=opus'
+                    });
+
+                    this.audioChunks = [];
+
+                    this.mediaRecorder.ondataavailable = (event) => {
+                        if (event.data.size > 0) {
+                            this.audioChunks.push(event.data);
+                        }
                     };
-                    console.log('✅ DEBUG_MEDIARECORDER_CREATED:', mediaRecorderDebug);
+
+                    this.mediaRecorder.onstop = async () => {
+                        // Send final audio chunk
+                        if (this.audioChunks.length > 0) {
+                            await this.sendAudioChunk();
+                        }
+                    };
+
+                    // Start recording and set up chunked sending
+                    this.mediaRecorder.start();
+                    this.isRecording = true;
                     
-                    // Store instance ID for tracking
-                    this.mediaRecorder._debug_instance_id = mediaRecorderDebug.instance_id;
+                    // Send audio chunks periodically
+                    this.audioChunkTimer = setInterval(async () => {
+                        if (this.isRecording && this.audioChunks.length > 0) {
+                            await this.sendAudioChunk();
+                        }
+                    }, this.chunkInterval);
+
+                    this.updateRecordingState(true);
+                    console.log('🎤 Recording started');
 
                 } catch (error) {
-                    console.error('❌ CRITICAL: Failed to create MediaRecorder:', error);
-                    throw error;
+                    console.error('❌ Failed to start recording:', error);
+                    this.showError('Failed to access microphone: ' + error.message);
+                }
+            }
+
+            async sendAudioChunk() {
+                if (!this.connectionId || this.audioChunks.length === 0) {
+                    return;
                 }
 
-                // 🔍 CRITICAL: Track data chunk counter for debugging
-                let chunkCounter = 0;
-                let lastChunkTime = Date.now();
-
-                // Handle audio data chunks
-                this.mediaRecorder.ondataavailable = (event) => {
-                    chunkCounter++;
-                    const currentTime = Date.now();
-                    const timeSinceLastChunk = currentTime - lastChunkTime;
-                    lastChunkTime = currentTime;
-
-                    // 🔍 COMPREHENSIVE DEBUG: Audio chunk analysis
-                    const chunkDebug = {
-                        timestamp: currentTime,
-                        chunk_number: chunkCounter,
-                        time_since_last_chunk_ms: timeSinceLastChunk,
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        event_data: {
-                            size: event.data.size,
-                            type: event.data.type,
-                            has_data: event.data.size > 0
-                        },
-                        mediaRecorder_state: this.mediaRecorder.state,
-                        websocket: this.ws ? {
-                            readyState: this.ws.readyState,
-                            readyState_name: ['CONNECTING', 'OPEN', 'CLOSING', 'CLOSED'][this.ws.readyState]
-                        } : null,
-                        audioStream: this.audioStream ? {
-                            active: this.audioStream.active,
-                            trackCount: this.audioStream.getTracks().length
-                        } : null
-                    };
-                    console.log('🔍 DEBUG_AUDIO_CHUNK_RECEIVED:', chunkDebug);
-
-                    if (event.data.size > 0 && this.ws && this.ws.readyState === WebSocket.OPEN) {
-                        // Convert audio blob to base64 and send via WebSocket
-                        const reader = new FileReader();
-                        reader.onload = () => {
-                            const base64Audio = reader.result.split(',')[1]; // Remove data:audio/... prefix
-                            const audioMessage = {
-                                action: 'audio_chunk',
-                                audio_data: base64Audio,
-                                mime_type: mimeType,
-                                timestamp: Date.now()
-                            };
-                            
-                            // 🔍 CRITICAL DEBUG: WebSocket send tracking
-                            const sendDebug = {
-                                timestamp: Date.now(),
-                                chunk_number: chunkCounter,
-                                base64_length: base64Audio.length,
-                                mime_type: mimeType,
-                                websocket_ready_state: this.ws.readyState
-                            };
-                            console.log('📤 DEBUG_WEBSOCKET_SEND_AUDIO:', sendDebug);
-                            
-                            this.ws.send(JSON.stringify(audioMessage));
-                        };
-                        
-                        reader.onerror = (error) => {
-                            console.error('❌ CRITICAL: FileReader error:', error);
-                            const readerErrorDebug = {
-                                timestamp: Date.now(),
-                                chunk_number: chunkCounter,
-                                error: error,
-                                event_data_size: event.data.size
-                            };
-                            console.log('🔍 DEBUG_FILEREADER_ERROR:', readerErrorDebug);
-                        };
-                        
-                        reader.readAsDataURL(event.data);
-                    } else {
-                        // 🔍 CRITICAL: Log why chunk was not sent
-                        const skipReason = [];
-                        if (event.data.size === 0) skipReason.push('empty_data');
-                        if (!this.ws) skipReason.push('no_websocket');
-                        if (this.ws && this.ws.readyState !== WebSocket.OPEN) skipReason.push('websocket_not_open');
-                        
-                        const skipDebug = {
-                            timestamp: Date.now(),
-                            chunk_number: chunkCounter,
-                            skip_reasons: skipReason,
-                            event_data_size: event.data.size,
-                            websocket_state: this.ws ? this.ws.readyState : null
-                        };
-                        console.log('⚠️ DEBUG_AUDIO_CHUNK_SKIPPED:', skipDebug);
-                    }
-                };
-
-                this.mediaRecorder.onerror = (event) => {
-                    console.error('🚨 MediaRecorder error:', event.error);
-                    
-                    // 🔍 CRITICAL DEBUG: MediaRecorder error analysis
-                    const errorDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        error: event.error,
-                        mediaRecorder_state: this.mediaRecorder.state,
-                        chunks_received_so_far: chunkCounter,
-                        audioStream: this.audioStream ? {
-                            active: this.audioStream.active,
-                            trackCount: this.audioStream.getTracks().length
-                        } : null
-                    };
-                    console.log('🔍 DEBUG_MEDIARECORDER_ERROR:', errorDebug);
-                    
-                    this.updateStatus('error', 'Audio recording error');
-                };
-
-                // 🔍 CRITICAL: Add event listeners for all MediaRecorder state changes
-                this.mediaRecorder.onstart = (event) => {
-                    const startDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        state: this.mediaRecorder.state
-                    };
-                    console.log('▶️ DEBUG_MEDIARECORDER_STARTED:', startDebug);
-                };
-
-                this.mediaRecorder.onstop = (event) => {
-                    const stopDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        state: this.mediaRecorder.state,
-                        total_chunks_received: chunkCounter
-                    };
-                    console.log('⏹️ DEBUG_MEDIARECORDER_STOPPED:', stopDebug);
-                };
-
-                this.mediaRecorder.onpause = (event) => {
-                    const pauseDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        state: this.mediaRecorder.state
-                    };
-                    console.log('⏸️ DEBUG_MEDIARECORDER_PAUSED:', pauseDebug);
-                };
-
-                this.mediaRecorder.onresume = (event) => {
-                    const resumeDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        state: this.mediaRecorder.state
-                    };
-                    console.log('⏯️ DEBUG_MEDIARECORDER_RESUMED:', resumeDebug);
-                };
-
-                // Start recording with small chunks for real-time streaming
                 try {
-                    console.log('🔍 DEBUG_MEDIARECORDER_START_ATTEMPT: Starting with 500ms timeslice...');
-                    this.mediaRecorder.start(500); // 500ms chunks for responsive streaming
-                    
-                    // 🔍 CRITICAL DEBUG: Post-start verification
-                    const postStartDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        state: this.mediaRecorder.state,
-                        stream: this.mediaRecorder.stream ? {
-                            active: this.mediaRecorder.stream.active,
-                            id: this.mediaRecorder.stream.id
-                        } : null
-                    };
-                    console.log('✅ DEBUG_MEDIARECORDER_START_SUCCESS:', postStartDebug);
-                    
-                } catch (error) {
-                    console.error('❌ CRITICAL: MediaRecorder start failed:', error);
-                    const startFailDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_instance_id: this.mediaRecorder._debug_instance_id,
-                        error: error,
-                        state: this.mediaRecorder.state
-                    };
-                    console.log('🔍 DEBUG_MEDIARECORDER_START_FAILED:', startFailDebug);
-                    throw error;
-                }
+                    // Combine all chunks into a single blob
+                    const audioBlob = new Blob(this.audioChunks, { type: 'audio/webm;codecs=opus' });
+                    this.audioChunks = []; // Clear chunks after creating blob
 
-                console.log('✅ MediaRecorder started with real-time streaming');
-            }
-
-            getSupportedMimeType() {
-                // Prioritize formats that work well for speech recognition
-                const types = [
-                    'audio/webm;codecs=opus',  // Best for speech, widely supported
-                    'audio/webm',
-                    'audio/mp4;codecs=mp4a.40.2',  // Good Safari support
-                    'audio/mp4',
-                    'audio/wav'  // Fallback, larger files
-                ];
-
-                console.log('🔍 Checking MediaRecorder support:');
-                for (const type of types) {
-                    const supported = MediaRecorder.isTypeSupported(type);
-                    console.log(`  ${type}: ${supported ? '✅' : '❌'}`);
-                    if (supported) {
-                        return type;
-                    }
-                }
-
-                // Final fallback
-                console.log('⚠️ Using fallback audio format');
-                return 'audio/webm';
-            }
-
-            cleanupAudioResources() {
-                console.log('🧹 Cleaning up audio resources...');
-
-                // 🔍 CRITICAL DEBUG: Pre-cleanup state analysis
-                const preCleanupDebug = {
-                    timestamp: Date.now(),
-                    isRecording: this.isRecording,
-                    mediaRecorder: this.mediaRecorder ? {
-                        state: this.mediaRecorder.state,
-                        instance_id: this.mediaRecorder._debug_instance_id,
-                        stream: this.mediaRecorder.stream ? {
-                            active: this.mediaRecorder.stream.active,
-                            id: this.mediaRecorder.stream.id,
-                            trackCount: this.mediaRecorder.stream.getTracks().length
-                        } : null
-                    } : null,
-                    audioStream: this.audioStream ? {
-                        active: this.audioStream.active,
-                        id: this.audioStream.id,
-                        trackCount: this.audioStream.getTracks().length,
-                        tracks: this.audioStream.getTracks().map(track => ({
-                            kind: track.kind,
-                            enabled: track.enabled,
-                            muted: track.muted,
-                            readyState: track.readyState,
-                            label: track.label
-                        }))
-                    } : null,
-                    audioChunks: this.audioChunks ? this.audioChunks.length : 0
-                };
-                console.log('🔍 DEBUG_CLEANUP_PRE_STATE:', preCleanupDebug);
-
-                // Stop MediaRecorder if active
-                if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-                    try {
-                        console.log(`🛑 Stopping MediaRecorder (state: ${this.mediaRecorder.state}, instance: ${this.mediaRecorder._debug_instance_id})`);
-                        this.mediaRecorder.stop();
-                        console.log('🛑 Stopped MediaRecorder');
-                    } catch (error) {
-                        console.warn('⚠️ Error stopping MediaRecorder:', error);
-                        // 🔍 DEBUG: MediaRecorder stop error analysis
-                        const stopErrorDebug = {
-                            timestamp: Date.now(),
-                            instance_id: this.mediaRecorder._debug_instance_id,
-                            error: {
-                                name: error.name,
-                                message: error.message
+                    // Convert to base64 for HTTP transmission
+                    const reader = new FileReader();
+                    reader.onload = async () => {
+                        const base64Audio = reader.result.split(',')[1];
+                        
+                        const response = await fetch(`/api/conversation/${this.connectionId}/audio`, {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type': 'application/json'
                             },
-                            state: this.mediaRecorder.state
-                        };
-                        console.log('🔍 DEBUG_MEDIARECORDER_STOP_ERROR:', stopErrorDebug);
-                    }
-                }
+                            body: JSON.stringify({
+                                audio_data: base64Audio,
+                                format: 'webm',
+                                sample_rate: 16000
+                            })
+                        });
 
-                // 🔍 CRITICAL: Clear all MediaRecorder event handlers to prevent memory leaks
-                if (this.mediaRecorder) {
-                    console.log(`🧹 CLEANUP: Clearing MediaRecorder events (instance: ${this.mediaRecorder._debug_instance_id})`);
-                    try {
-                        this.mediaRecorder.ondataavailable = null;
-                        this.mediaRecorder.onerror = null;
-                        this.mediaRecorder.onstart = null;
-                        this.mediaRecorder.onstop = null;
-                        this.mediaRecorder.onpause = null;
-                        this.mediaRecorder.onresume = null;
-                        console.log('✅ CLEANUP: MediaRecorder event handlers cleared');
-                    } catch (error) {
-                        console.warn('⚠️ Error clearing MediaRecorder event handlers:', error);
-                    }
-                    this.mediaRecorder = null;
-                    console.log('✅ CLEANUP: MediaRecorder reference cleared');
-                }
-
-                // Stop any active audio streams
-                if (this.audioStream) {
-                    console.log(`🛑 Stopping audio stream (id: ${this.audioStream.id}, active: ${this.audioStream.active})`);
-                    const tracks = this.audioStream.getTracks();
-                    tracks.forEach((track, index) => {
-                        try {
-                            console.log(`🛑 Stopping track ${index + 1}/${tracks.length}: ${track.label} (kind: ${track.kind}, readyState: ${track.readyState})`);
-                            track.stop();
-                            console.log(`✅ Stopped track: ${track.label}`);
-                        } catch (error) {
-                            console.warn(`⚠️ Error stopping track ${track.label}:`, error);
+                        if (!response.ok) {
+                            console.error('Failed to send audio chunk:', response.statusText);
                         }
-                    });
-                    this.audioStream = null;
-                    console.log('✅ CLEANUP: Audio stream reference cleared');
-                }
-
-                // Reset state
-                console.log('🔄 CLEANUP: Resetting state variables...');
-                this.isRecording = false;
-                this.audioChunks = [];
-
-                // 🔍 CRITICAL DEBUG: Post-cleanup state verification
-                const postCleanupDebug = {
-                    timestamp: Date.now(),
-                    isRecording: this.isRecording,
-                    mediaRecorder: this.mediaRecorder,
-                    audioStream: this.audioStream,
-                    audioChunks: this.audioChunks.length,
-                    cleanup_success: this.mediaRecorder === null && this.audioStream === null && !this.isRecording
-                };
-                console.log('🔍 DEBUG_CLEANUP_POST_STATE:', postCleanupDebug);
-
-                // 🔍 VALIDATION: Ensure cleanup was successful
-                if (this.mediaRecorder || this.audioStream || this.isRecording) {
-                    console.error('❌ CRITICAL: Cleanup validation failed! Some resources may not be properly disposed');
-                    const failureDebug = {
-                        timestamp: Date.now(),
-                        mediaRecorder_not_null: !!this.mediaRecorder,
-                        audioStream_not_null: !!this.audioStream,
-                        isRecording_still_true: this.isRecording
                     };
-                    console.log('🔍 DEBUG_CLEANUP_VALIDATION_FAILED:', failureDebug);
-                } else {
-                    console.log('✅ CLEANUP: All resources successfully disposed');
+                    reader.readAsDataURL(audioBlob);
+
+                } catch (error) {
+                    console.error('Error sending audio chunk:', error);
                 }
             }
 
-            stopRecording() {
-                console.log('🛑 Stopping recording...');
-
-                // Clean up any frontend audio resources
-                this.cleanupAudioResources();
-
-                // Notify backend to stop recording
-                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-                    this.ws.send(JSON.stringify({ action: 'stop_recording' }));
+            async stopRecording() {
+                if (!this.isRecording) {
+                    console.log('Not currently recording');
+                    return;
                 }
 
-                // Update UI
-                this.updateStatus('processing', 'Processing conversation...');
-                this.startBtn.disabled = true;
-                this.stopBtn.disabled = true;
+                this.isRecording = false;
+                
+                // Clear the chunk timer
+                if (this.audioChunkTimer) {
+                    clearInterval(this.audioChunkTimer);
+                    this.audioChunkTimer = null;
+                }
+
+                if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
+                    this.mediaRecorder.stop();
+                    
+                    // Stop all tracks
+                    this.mediaRecorder.stream.getTracks().forEach(track => {
+                        track.stop();
+                    });
+                }
+
+                // Stop the conversation
+                if (this.connectionId) {
+                    try {
+                        await fetch(`/api/conversation/${this.connectionId}/stop`, {
+                            method: 'POST'
+                        });
+                    } catch (error) {
+                        console.error('Error stopping conversation:', error);
+                    }
+                }
+
+                this.updateRecordingState(false);
+                console.log('🛑 Recording stopped');
             }
 
             async runDemo() {
@@ -1346,6 +784,118 @@ Would you like to try Demo Mode instead?`;
                 }
 
                 document.getElementById('actionItemsContent').innerHTML = html;
+            }
+
+            async startConversation() {
+                try {
+                    // Start conversation via HTTP API
+                    const response = await fetch('/api/conversation/start', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        }
+                    });
+
+                    if (!response.ok) {
+                        throw new Error(`Failed to start conversation: ${response.statusText}`);
+                    }
+
+                    const data = await response.json();
+                    this.connectionId = data.connection_id;
+                    
+                    // Start listening for server-sent events
+                    this.startEventStream();
+                    
+                    this.updateConnectionStatus('connected');
+                    console.log('✅ Conversation started with ID:', this.connectionId);
+                    
+                    return true;
+                } catch (error) {
+                    console.error('❌ Failed to start conversation:', error);
+                    this.updateConnectionStatus('disconnected');
+                    this.showError('Failed to start conversation: ' + error.message);
+                    return false;
+                }
+            }
+
+            startEventStream() {
+                if (!this.connectionId) {
+                    console.error('No connection ID available for event stream');
+                    return;
+                }
+
+                // Close existing event source if any
+                if (this.eventSource) {
+                    this.eventSource.close();
+                }
+
+                // Start Server-Sent Events stream
+                this.eventSource = new EventSource(`/api/conversation/${this.connectionId}/events`);
+                
+                this.eventSource.onopen = () => {
+                    console.log('✅ Event stream connected');
+                    this.updateConnectionStatus('connected');
+                };
+
+                this.eventSource.onmessage = (event) => {
+                    try {
+                        const data = JSON.parse(event.data);
+                        this.handleStreamEvent(data);
+                    } catch (error) {
+                        console.error('Error parsing event data:', error);
+                    }
+                };
+
+                this.eventSource.onerror = (error) => {
+                    console.error('❌ Event stream error:', error);
+                    this.updateConnectionStatus('error');
+                    
+                    // Attempt to reconnect after a delay
+                    setTimeout(() => {
+                        if (this.connectionId && this.eventSource.readyState === EventSource.CLOSED) {
+                            console.log('🔄 Attempting to reconnect event stream...');
+                            this.startEventStream();
+                        }
+                    }, 3000);
+                };
+            }
+
+            handleStreamEvent(data) {
+                console.log('📨 Received event:', data);
+
+                switch (data.type) {
+                    case 'transcript':
+                        this.handleTranscriptUpdate(data);
+                        break;
+                    case 'summary':
+                        this.handleSummaryUpdate(data);
+                        break;
+                    case 'insight':
+                        this.handleInsightUpdate(data);
+                        break;
+                    case 'error':
+                        this.handleError(data);
+                        break;
+                    case 'conversation_complete':
+                        this.handleConversationComplete(data);
+                        break;
+                    default:
+                        console.log('Unknown event type:', data.type);
+                }
+            }
+
+            updateConnectionStatus(status) {
+                this.connectionStatus.textContent = status;
+            }
+
+            showError(message) {
+                alert(message);
+            }
+
+            updateRecordingState(isRecording) {
+                this.isRecording = isRecording;
+                this.startBtn.disabled = isRecording;
+                this.stopBtn.disabled = !isRecording;
             }
         }
 
