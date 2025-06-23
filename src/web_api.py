@@ -563,6 +563,16 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
 
                 def _forward_transcript(segment: TranscriptSegment):
                     """Thread-safe forwarding of STT segments to SSE queue"""
+                    # To avoid duplicate lines from interim hypotheses we only forward
+                    # results that the Speech API has marked as final.  Interim messages
+                    # often contain the entire phrase-so-far ("good", then "good morning",
+                    # then "good morning how", …) which leads to heavy repetition in the
+                    # UI when we naively append every event.  Filtering on is_final keeps
+                    # the live transcript readable while still providing near-real-time
+                    # updates every few hundred milliseconds once the model is confident.
+                    if not getattr(segment, "is_final", False):
+                        return  # skip interim duplicates
+
                     try:
                         asyncio.run_coroutine_threadsafe(
                             send_conversation_event(

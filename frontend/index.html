@@ -622,7 +622,7 @@ Would you like to try Demo Mode instead?`;
                     });
                 }
 
-                // Stop the conversation
+                // Stop the conversation on the backend
                 if (this.connectionId) {
                     try {
                         await fetch(`/api/conversation/${this.connectionId}/stop`, {
@@ -635,6 +635,9 @@ Would you like to try Demo Mode instead?`;
 
                 this.updateRecordingState(false);
                 console.log('🛑 Recording stopped');
+
+                // Fully reset controls/UI so a new session can start without refresh
+                this.resetControls();
             }
 
             async runDemo() {
@@ -685,8 +688,27 @@ Would you like to try Demo Mode instead?`;
             }
 
             resetControls() {
+                // Re-enable buttons
                 this.startBtn.disabled = false;
                 this.stopBtn.disabled = true;
+
+                // Close any open SSE stream
+                if (this.eventSource) {
+                    this.eventSource.close();
+                    this.eventSource = null;
+                }
+
+                // Clear connection so the next Start triggers a fresh session
+                this.connectionId = null;
+
+                // Reset transcript buffer & UI
+                this.liveTranscript = '';
+                this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">Click "Start Recording" to begin live transcription...</div>';
+
+                // Hide processing banner if still visible
+                this.processingStatus.classList.add('hidden');
+
+                // (Optional) keep resultsContainer visible so user can still copy
             }
 
             displayResults(results, ephemeralUrl) {
