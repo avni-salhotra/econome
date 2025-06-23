@@ -367,8 +367,12 @@ class ProductionSTTServiceV2:
     
     def _audio_chunk_generator(self):
         """🚨 CRITICAL: Generator that yields audio chunks for streaming"""
-        # First, send the streaming config
-        yield speech_v2.StreamingRecognizeRequest(streaming_config=self._streaming_config)
+        # First, send the recognizer and streaming config (required by Speech V2 API)
+        # According to docs: "the first message must contain a recognizer and a streaming_config"
+        yield speech_v2.StreamingRecognizeRequest(
+            recognizer=self.recognizer,
+            streaming_config=self._streaming_config
+        )
         
         # Then continuously yield audio chunks
         while self._is_recording and self._stream_active:
