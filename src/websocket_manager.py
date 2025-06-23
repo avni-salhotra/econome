@@ -41,12 +41,23 @@ class WebSocketConnection:
     
     async def send_message(self, message: Dict[str, Any]) -> bool:
         """Send message to this connection"""
+        # 🚨 CRITICAL FIX: Check connection state before attempting send
+        if not self.is_active:
+            return False
+            
         try:
             await self.websocket.send_text(json.dumps(message))
             self.last_activity = datetime.now()
             return True
         except Exception as e:
-            logger.error(f"Failed to send message to {self.connection_id}: {e}")
+            # 🚨 CRITICAL FIX: More specific error handling for WebSocket states
+            error_msg = str(e).lower()
+            if "close message has been sent" in error_msg or "not connected" in error_msg:
+                logger.warning(f"WebSocket {self.connection_id} is disconnected: {e}")
+            else:
+                logger.error(f"Failed to send message to {self.connection_id}: {e}")
+            
+            # Mark connection as inactive immediately
             self.is_active = False
             return False
     
@@ -194,7 +205,21 @@ class WebSocketManager:
             return False
         
         connection = self.connections[connection_id]
-        return await connection.send_message(message)
+        
+        # 🚨 CRITICAL FIX: Check if connection is active before sending
+        if not connection.is_active:
+            logger.warning(f"⚠️ Attempting to send to inactive connection {connection_id} - cleaning up")
+            self.disconnect(connection_id)
+            return False
+        
+        success = await connection.send_message(message)
+        
+        # 🚨 CRITICAL FIX: If send fails, immediately clean up the connection
+        if not success:
+            logger.warning(f"⚠️ Send failed to {connection_id} - cleaning up connection")
+            self.disconnect(connection_id)
+        
+        return success
     
     async def broadcast(self, message: Dict[str, Any], exclude_connection: Optional[str] = None):
         """Broadcast message to all active connections"""
