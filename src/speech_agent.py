@@ -191,18 +191,23 @@ class ProductionSTTServiceV2:
                     break
 
             if credentials_found:
-                # Use global endpoint as per Speech V2 documentation
+                # Use us-central1 endpoint to match our deployment region
                 from google.api_core.client_options import ClientOptions
                 
+                client_options = ClientOptions(
+                    api_endpoint="us-central1-speech.googleapis.com"
+                )
+                
                 self.speech_client = speech_v2.SpeechClient(
-                    credentials=self.credentials
+                    credentials=self.credentials,
+                    client_options=client_options
                 )
                 self._has_credentials = True
 
-                # Speech V2 uses recognizers - use global recognizer as per official docs
-                self.recognizer = f"projects/{self.project_id}/locations/global/recognizers/_"
+                # Speech V2 uses recognizers - use us-central1 to match deployment region
+                self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
 
-                print("✅ Google Cloud Speech V2 client initialized (global recognizer)")
+                print("✅ Google Cloud Speech V2 client initialized (us-central1 regional)")
                 
                 # Initialize streaming config after client is ready
                 self._initialize_streaming_config()
