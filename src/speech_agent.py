@@ -392,12 +392,17 @@ class ProductionSTTServiceV2:
         """Create a new streaming recognition session"""
         try:
             print("🚀 Creating new streaming session...")
-            
+
+            # 🚩 Activate stream *before* we create the gRPC call so that the
+            #     _audio_chunk_generator while-loop sees _stream_active == True
+            self._stream_active = True  # must be set early so generator runs
+            self._stream_start_time = time.time()
+
             # Create streaming client
             self._streaming_client = self.speech_client.streaming_recognize(
                 requests=self._audio_chunk_generator()
             )
-            
+
             # Start response processing in separate thread
             response_thread = threading.Thread(
                 target=self._process_streaming_responses,
@@ -405,8 +410,6 @@ class ProductionSTTServiceV2:
             )
             response_thread.start()
             
-            self._stream_active = True
-            self._stream_start_time = time.time()
             self._stream_restart_count += 1
             
             print(f"✅ Streaming session #{self._stream_restart_count} created successfully")
