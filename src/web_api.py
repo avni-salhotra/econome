@@ -41,8 +41,26 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS middleware for frontend access
-cors_origins = os.getenv("CORS_ORIGINS", "*").split(",")
+# ---------------------------------------------------------------------------
+# 🌐 CORS CONFIGURATION
+# ----------------------------------------------------------------------------
+# In production we restrict origins to the list provided via CORS_ORIGINS or
+# fall back to the public BASE_URL. In non-production we allow all (*).
+# ---------------------------------------------------------------------------
+
+ENVIRONMENT = os.getenv("ENVIRONMENT", "development").lower()
+CORS_ORIGINS_ENV = os.getenv("CORS_ORIGINS")
+
+if CORS_ORIGINS_ENV:
+    cors_origins = [o.strip() for o in CORS_ORIGINS_ENV.split(",") if o.strip()]
+elif ENVIRONMENT == "production":
+    cors_origins = [os.getenv("BASE_URL", "https://econome.app")]
+else:
+    cors_origins = ["*"]  # Allow all in dev / local testing
+
+logger.info(f"🔒 CORS origins set to: {cors_origins}")
+
+# Register FastAPI CORS middleware with computed origins
 app.add_middleware(
     CORSMiddleware,
     allow_origins=cors_origins,
