@@ -332,31 +332,25 @@ Would you like to try Demo Mode instead?`;
             }
 
             connectWebSocket() {
-                const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-                const wsUrl = `${protocol}//${window.location.host}/ws/conversation`;
+                // HTTP-based connection instead of WebSocket
+                this.checkConnection();
+            }
 
-                this.ws = new WebSocket(wsUrl);
-
-                this.ws.onopen = () => {
-                    this.updateStatus('ready', 'Connected - Ready to record');
-                    this.connectionStatus.textContent = 'Connected to server';
-                };
-
-                this.ws.onmessage = (event) => {
-                    const data = JSON.parse(event.data);
-                    this.handleWebSocketMessage(data);
-                };
-
-                this.ws.onclose = () => {
-                    this.updateStatus('error', 'Disconnected');
-                    this.connectionStatus.textContent = 'Disconnected from server';
-                    setTimeout(() => this.connectWebSocket(), 3000);
-                };
-
-                this.ws.onerror = (error) => {
-                    console.error('WebSocket error:', error);
+            async checkConnection() {
+                try {
+                    const response = await fetch('/health');
+                    if (response.ok) {
+                        this.updateStatus('ready', 'Connected - Ready to record');
+                        this.connectionStatus.textContent = 'Connected to server';
+                    } else {
+                        throw new Error('Service unavailable');
+                    }
+                } catch (error) {
+                    console.error('Connection error:', error);
                     this.updateStatus('error', 'Connection error');
-                };
+                    this.connectionStatus.textContent = 'Connection failed';
+                    setTimeout(() => this.checkConnection(), 3000);
+                }
             }
 
             setupEventListeners() {
