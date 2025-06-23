@@ -527,6 +527,15 @@ class ProductionSTTServiceV2:
                 if not self._is_recording:
                     break
                     
+                # NEW 🔴 Log API-level errors early and continue
+                if hasattr(response, 'error') and response.error.code != 0:
+                    print(
+                        f"❌ STREAMING_ERROR: code={response.error.code} msg={response.error.message} details={response.error.details}"
+                    )
+                    # Raising here would unwind the thread and force a restart; instead, let
+                    # upper-level timeout logic handle restarts so we can log many samples.
+                    continue
+
                 # Process the streaming response
                 self._handle_streaming_response(response)
                 
