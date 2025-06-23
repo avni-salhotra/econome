@@ -117,7 +117,7 @@ class ProductionSTTServiceV2:
     
     def __init__(self, 
                  credentials_path: str = "speech-credentials.json",
-                 chunk_duration: float = 0.5,
+                 chunk_duration: float = 0.1,  # 🎯 OPTIMIZED: 100ms for real-time streaming (GCP best practice)
                  sample_rate: int = 16000,
                  project_id: str = "econome-hackathon"):
         self.sample_rate = sample_rate
@@ -154,7 +154,7 @@ class ProductionSTTServiceV2:
         self._error_callback = None
         self._status_callback = None
 
-        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=chirp_2, buffer_size={self.max_queue_size})")
+        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
@@ -162,6 +162,7 @@ class ProductionSTTServiceV2:
             # Try multiple credential paths (for Cloud Run and local development)
             credential_paths = [
                 credentials_path,  # Default path (local development)
+                "/app/speech/credentials.json",  # Current Cloud Run mount path
                 "/app/secrets/speech/credentials.json",  # New Cloud Run path (separate directories)
                 "/app/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
                 "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
@@ -244,6 +245,15 @@ class ProductionSTTServiceV2:
             try:
                 # Get audio chunk with timeout
                 chunk_data = self._audio_queue.get(timeout=1.0)
+                
+                # 🔍 CRITICAL DEBUG: Chunk received for processing
+                chunk_receive_debug = {
+                    "chunk_count": chunk_count + 1,
+                    "queue_size_after_get": self._audio_queue.qsize(),
+                    "chunk_data_type": type(chunk_data).__name__,
+                    "is_recording": self._is_recording
+                }
+                print(f"🔍 DEBUG_CHUNK_RECEIVED_FOR_PROCESSING: {chunk_receive_debug}")
 
                 # Double-check recording status before processing
                 if not self._is_recording:
@@ -322,7 +332,7 @@ class ProductionSTTServiceV2:
         print("🏁 Mock audio processing thread finished")
 
     def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
-        """Transcribe audio chunk using Google Speech V2 with Chirp 2 model"""
+        """Transcribe audio chunk using Google Speech V2 with latest_long model for continuous conversations"""
         try:
             # Check if recording is still active before processing
             if not self._is_recording:
@@ -331,8 +341,26 @@ class ProductionSTTServiceV2:
 
             self._chunk_counter += 1
 
+            # 🔍 COMPREHENSIVE AUDIO PIPELINE VALIDATION
+            chunk_debug = {
+                "chunk_id": self._chunk_counter,
+                "timestamp": datetime.now().isoformat(),
+                "audio_shape": audio_chunk.shape,
+                "audio_dtype": str(audio_chunk.dtype),
+                "audio_min": float(np.min(audio_chunk)),
+                "audio_max": float(np.max(audio_chunk)),
+                "audio_mean": float(np.mean(audio_chunk)),
+                "audio_std": float(np.std(audio_chunk)),
+                "has_audio_signal": float(np.std(audio_chunk)) > 0.001,  # Detect if there's actual audio
+                "sample_rate": self.sample_rate,
+                "chunk_duration_ms": len(audio_chunk) / self.sample_rate * 1000,
+                "has_credentials": self._has_credentials
+            }
+            print(f"🔍 DEBUG_AUDIO_CHUNK_RECEIVED: {chunk_debug}")
+
             if not self._has_credentials:
                 # Mock mode for development
+                print(f"🎭 DEBUG_STT_MOCK_MODE: Generating mock transcript for chunk {self._chunk_counter}")
                 self._generate_mock_transcript()
                 return
 
@@ -340,7 +368,21 @@ class ProductionSTTServiceV2:
             audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
             audio_bytes = audio_int16.tobytes()
 
-            # OPTIMIZED: Create Speech V2 request with Chirp 2 model, without diarization_config
+            # 🔍 VALIDATE AUDIO CONVERSION & QUALITY
+            conversion_debug = {
+                "chunk_id": self._chunk_counter,
+                "original_length": len(audio_chunk),
+                "int16_length": len(audio_int16),
+                "bytes_length": len(audio_bytes),
+                "expected_bytes": len(audio_chunk) * 2,  # 16-bit = 2 bytes per sample
+                "conversion_ok": len(audio_bytes) == len(audio_chunk) * 2,
+                "audio_amplitude_ok": float(np.max(np.abs(audio_int16))) > 100,  # Check if audio has reasonable amplitude
+                "zero_padding_ratio": float(np.sum(audio_int16 == 0)) / len(audio_int16),  # Check for silence
+                "sample_rate": self.sample_rate
+            }
+            print(f"🔍 DEBUG_AUDIO_CONVERSION: {conversion_debug}")
+
+            # 🎯 OPTIMIZED: Create Speech V2 request with latest_long model for continuous conversations
             request = speech_v2.RecognizeRequest(
                 recognizer=self.recognizer,
                 config=speech_v2.RecognitionConfig(
@@ -350,7 +392,7 @@ class ProductionSTTServiceV2:
                         audio_channel_count=1,
                     ),
                     language_codes=["en-US"],
-                    model="chirp_2",  # OPTIMIZED: Latest & most accurate model
+                    model="latest_long",  # 🎯 CRITICAL FIX: For continuous conversations (not commands)
                     features=speech_v2.RecognitionFeatures(
                         enable_automatic_punctuation=True,
                         enable_word_time_offsets=True,
@@ -360,14 +402,51 @@ class ProductionSTTServiceV2:
                 content=audio_bytes
             )
 
+            # DEEP DEBUG: Log STT API call details
+            stt_request_debug = {
+                "chunk_id": self._chunk_counter,
+                "model": "latest_long",
+                "recognizer": self.recognizer,
+                "audio_bytes_length": len(audio_bytes),
+                "sample_rate": self.sample_rate,
+                "encoding": "LINEAR16"
+            }
+            print(f"🔍 DEBUG_STT_API_REQUEST: {stt_request_debug}")
+
             # Call Speech V2 API
+            print(f"🔍 DEBUG_STT_API_CALLING: Making Speech V2 API call for chunk {self._chunk_counter}")
             response = self.speech_client.recognize(request=request)
+            print(f"🔍 DEBUG_STT_API_RESPONSE: Received response for chunk {self._chunk_counter}, type={type(response)}")
+
+            # DEEP DEBUG: Log response details
+            response_debug = {
+                "chunk_id": self._chunk_counter,
+                "has_results": hasattr(response, 'results') and len(response.results) > 0,
+                "results_count": len(response.results) if hasattr(response, 'results') else 0
+            }
+            
+            if hasattr(response, 'results') and response.results:
+                result = response.results[0]
+                response_debug.update({
+                    "has_alternatives": hasattr(result, 'alternatives') and len(result.alternatives) > 0,
+                    "alternatives_count": len(result.alternatives) if hasattr(result, 'alternatives') else 0
+                })
+                
+                if hasattr(result, 'alternatives') and result.alternatives:
+                    alt = result.alternatives[0]
+                    response_debug.update({
+                        "transcript_text": getattr(alt, 'transcript', ''),
+                        "confidence": getattr(alt, 'confidence', 0.0)
+                    })
+            
+            print(f"🔍 DEBUG_STT_API_RESPONSE_DETAILS: {response_debug}")
 
             # Process response
             self._process_speech_response(response)
 
         except Exception as e:
             print(f"❌ Transcription error for chunk {self._chunk_counter}: {e}")
+            print(f"🔍 DEBUG_STT_ERROR_DETAILS: chunk={self._chunk_counter}, error_type={type(e)}, error_str={str(e)}")
             if self._error_callback:
                 self._error_callback("transcription", e)
     
@@ -646,7 +725,6 @@ class ProductionSTTServiceV2:
             # Start processing thread if not already running (with proper synchronization)
             if self._processing_thread is None or not self._processing_thread.is_alive():
                 import threading
-                import time
 
                 self._processing_thread = threading.Thread(
                     target=self._process_audio_chunks,
@@ -684,6 +762,20 @@ class ProductionSTTServiceV2:
         direct access to _audio_queue from web_api.py
         """
         try:
+            # 🔍 CRITICAL DEBUG: Enhanced chunk queuing debugging
+            queue_debug = {
+                "is_recording": self._is_recording,
+                "processing_thread_exists": self._processing_thread is not None,
+                "processing_thread_alive": self._processing_thread.is_alive() if self._processing_thread else False,
+                "audio_array_shape": audio_array.shape,
+                "audio_array_dtype": str(audio_array.dtype),
+                "audio_array_has_data": np.any(audio_array != 0),
+                "current_queue_size": self._audio_queue.qsize(),
+                "max_queue_size": self.max_queue_size,
+                "chunk_counter": self._chunk_counter
+            }
+            print(f"🔍 DEBUG_QUEUE_AUDIO_CHUNK_ENTRY: {queue_debug}")
+            
             if not self._is_recording:
                 print("⚠️ Cannot queue audio chunk - not recording")
                 return False
@@ -703,6 +795,7 @@ class ProductionSTTServiceV2:
 
             if not self._audio_queue.full():
                 self._audio_queue.put(timestamped_chunk, block=False)
+                print(f"✅ Audio chunk queued successfully (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
                 return True
             else:
                 # Queue is full, remove oldest and add new (with timeout for safety)
@@ -716,9 +809,10 @@ class ProductionSTTServiceV2:
                         print(f"⚠️ Audio queue was full - dropped oldest chunk (queue_time_ms: {queue_time_ms:.2f})")
                     else:
                         print("⚠️ Audio queue was full - dropped oldest chunk")
+                    print(f"✅ Audio chunk queued after drop (queue_size: {self._audio_queue.qsize()}/{self.max_queue_size})")
                     return True
                 except queue.Empty:
-                    print("❌ Audio queue management failed")
+                    print("❌ Audio queue management failed - queue appeared full but was empty")
                     return False
 
         except Exception as e:
