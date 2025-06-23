@@ -231,39 +231,36 @@ class ProductionSTTServiceV2:
             return
             
         try:
-            # 🎯 CRITICAL: Use the simplest working Speech V2 pattern
-            # Based on official documentation examples
+            # 🎯 CRITICAL: Use explicit decoding config for Speech V2 instead of auto-detect
+            # Based on our frontend audio capture: 16kHz, 16-bit, mono PCM
             recognition_config = speech_v2.RecognitionConfig(
-                auto_decoding_config=speech_v2.AutoDetectDecodingConfig(),
+                explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
+                    encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                    sample_rate_hertz=16000,
+                    audio_channel_count=1,
+                ),
                 language_codes=["en-US"],  # This must never be empty
-                model="latest_long",  # Try latest_long instead of just "long"
+                model="latest_long",  # Use latest_long for better transcription
             )
             
-            # Debug: Print the config before using it
+            # Debug: Print the config values
             print(f"🔍 RecognitionConfig created with language_codes: {recognition_config.language_codes}")
-            print(f"🔍 RecognitionConfig model: {recognition_config.model}")
+            print(f"🔍 Audio encoding: LINEAR16, sample_rate: 16000Hz, channels: 1")
             
+            # Create streaming config
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
                 config=recognition_config,
                 streaming_features=speech_v2.StreamingRecognitionFeatures(
                     interim_results=True,
-                )
+                ),
             )
             
-            # Debug: Verify the final streaming config
             print(f"🔍 StreamingConfig created with language_codes: {self._streaming_config.config.language_codes}")
-            
-            # Validate the configuration
-            if not self._streaming_config.config.language_codes:
-                raise ValueError("Streaming config language_codes is empty after initialization")
-            
-            print(f"✅ Streaming recognition configuration initialized with language_codes: {self._streaming_config.config.language_codes}")
+            print("✅ Streaming recognition configuration initialized with explicit encoding")
             
         except Exception as e:
             print(f"❌ Failed to initialize streaming config: {e}")
             self._streaming_config = None
-            if hasattr(self, '_error_callback') and self._error_callback:
-                self._error_callback("streaming_config_init", e)
     
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
         """Set callback for real-time transcript segments"""
