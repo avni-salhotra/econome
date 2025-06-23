@@ -72,8 +72,8 @@ jobs:
           echo "🔍 Verifying image exists with retry logic..."
 
           # Retry logic for image verification (handles registry propagation delays)
-          MAX_RETRIES=10
-          RETRY_DELAY=30
+          MAX_RETRIES=5
+          RETRY_DELAY=15
           RETRY_COUNT=0
           IMAGE_FOUND=false
 
@@ -207,17 +207,17 @@ jobs:
     - name: "⏱️ Wait for deployment to be ready"
       run: |
         echo "⏱️ Waiting for service to be ready..."
-        sleep 30
+        sleep 10
         
         # Check if service is responding
         SERVICE_URL="${{ steps.get-url.outputs.url }}"
-        for i in {1..10}; do
+        for i in {1..6}; do
           if curl -f -s "$SERVICE_URL/health" > /dev/null; then
             echo "✅ Service is responding"
             break
           else
-            echo "⏳ Attempt $i/10: Service not ready yet, waiting..."
-            sleep 10
+            echo "⏳ Attempt $i/6: Service not ready yet, waiting..."
+            sleep 5
           fi
         done
 
@@ -286,8 +286,8 @@ jobs:
         echo "✅ All staging health checks passed"
 
     - name: "🧪 Run end-to-end tests against staging"
-              run: |
-          SERVICE_URL="${{ needs.deploy-staging.outputs.service-url }}"
+      run: |
+        SERVICE_URL="${{ needs.deploy-staging.outputs.service-url }}"
         echo "🧪 Running E2E tests against staging..."
         echo "🔗 Service URL: $SERVICE_URL"
 
@@ -410,7 +410,7 @@ jobs:
         echo "- 🌐 Health Check: ✅ Passed" >> $GITHUB_STEP_SUMMARY
         echo "- 📄 Main Page: ✅ Passed" >> $GITHUB_STEP_SUMMARY
         echo "- 📚 API Docs: ✅ Passed" >> $GITHUB_STEP_SUMMARY
-                  echo "- 🔌 HTTP API: ✅ Passed" >> $GITHUB_STEP_SUMMARY
+        echo "- 🔌 HTTP API: ✅ Passed" >> $GITHUB_STEP_SUMMARY
         echo "- 🎭 Demo API: ✅ Passed" >> $GITHUB_STEP_SUMMARY
         echo "" >> $GITHUB_STEP_SUMMARY
         echo "## 🎯 Frontend Status" >> $GITHUB_STEP_SUMMARY
