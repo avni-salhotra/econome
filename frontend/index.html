@@ -499,7 +499,19 @@ Would you like to try Demo Mode instead?`;
             }
 
             addLiveTranscript(text, confidence) {
-                this.liveTranscript += ' ' + text;
+                // Deduplicate incremental finals: if the new text already starts
+                // with the previous transcript, replace instead of append.
+                const trimmed = text.trim();
+
+                if (this.liveTranscript.length === 0) {
+                    this.liveTranscript = trimmed;
+                } else if (trimmed.startsWith(this.liveTranscript.trim())) {
+                    // The API sometimes returns the entire sentence-so-far as a new
+                    // final.  Replace to avoid "My My dog My dog is" effects.
+                    this.liveTranscript = trimmed;
+                } else {
+                    this.liveTranscript += ' ' + trimmed;
+                }
 
                 const confidenceColor = confidence > 0.8 ? 'text-green-600' :
                                        confidence > 0.6 ? 'text-yellow-600' : 'text-red-600';
