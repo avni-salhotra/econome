@@ -219,6 +219,9 @@
                 this.connectionId = null;
                 this.isSafari = this.detectSafariBrowser();
 
+                // NEW: define chunk interval (ms) for MediaRecorder
+                this.chunkInterval = 100; // 100 ms chunks recommended by GCP best-practices
+
                 // Audio streaming properties
                 this.mediaRecorder = null;
                 this.audioStream = null;
@@ -581,31 +584,21 @@ Would you like to try Demo Mode instead?`;
                     console.log('📦 Sending audio blob:', audioBlob.size, 'bytes');
                     this.audioChunks = []; // Clear chunks after creating blob
 
-                    // Convert to base64 for HTTP transmission
-                    const reader = new FileReader();
-                    reader.onload = async () => {
-                        const base64Audio = reader.result.split(',')[1];
-                        console.log('📤 Sending base64 audio chunk, length:', base64Audio.length);
-                        
-                        const response = await fetch(`/api/conversation/${this.connectionId}/audio`, {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type': 'application/json'
-                            },
-                            body: JSON.stringify({
-                                audio_data: base64Audio,
-                                format: 'webm',
-                                sample_rate: 16000
-                            })
-                        });
+                    const response = await fetch(`/api/conversation/${this.connectionId}/audio`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'audio/webm'
+                        },
+                        body: audioBlob
+                    });
 
-                        if (response.ok) {
-                            console.log('✅ Audio chunk sent successfully');
-                        } else {
-                            console.error('❌ Failed to send audio chunk:', response.status, response.statusText);
-                        }
-                    };
-                    reader.readAsDataURL(audioBlob);
+                    if (response.ok) {
+                        console.log('✅ Audio chunk sent successfully');
+                    } else if (response.status === 429) {
+                        console.warn('⚠️ Backend queue full (429), will retry next chunk.');
+                    } else {
+                        console.error('❌ Failed to send audio chunk:', response.status, response.statusText);
+                    }
 
                 } catch (error) {
                     console.error('❌ Error sending audio chunk:', error);

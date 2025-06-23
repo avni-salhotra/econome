@@ -435,6 +435,42 @@ class TestPerformanceAndConcurrency:
         # Memory growth should be reasonable (less than 50MB)
         assert memory_growth < 50 * 1024 * 1024
 
+    def test_audio_queue_backpressure(self, test_client):
+        """Audio endpoint should return 429 when STT queue is near capacity"""
+        from unittest.mock import MagicMock
+
+        connection_id = "test-backpressure-123"
+
+        # Create dummy queue with large size
+        class _FullQueue:
+            def qsize(self):
+                return 100  # Simulate full queue
+
+        stt_service = MagicMock()
+        stt_service._audio_queue = _FullQueue()
+        stt_service.max_queue_size = 100
+
+        stt_agent = MagicMock()
+        stt_agent.stt_service = stt_service
+
+        conversation_system = MagicMock()
+        conversation_system.get_agent.return_value = stt_agent
+
+        # Register the mock system in active conversations
+        web_api.active_conversations[connection_id] = conversation_system
+
+        # Send small dummy audio blob
+        response = test_client.post(
+            f"/api/conversation/{connection_id}/audio",
+            data=b"\x00\x00",
+            headers={"Content-Type": "audio/webm"},
+        )
+
+        # Clean up
+        del web_api.active_conversations[connection_id]
+
+        assert response.status_code == 429
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"]) 
