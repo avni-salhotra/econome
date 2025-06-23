@@ -152,6 +152,7 @@ class ProductionSTTServiceV2:
 
         self._recording_thread = None
         self._processing_thread = None
+        self._master_thread = None
 
         # 🚨 NEW: Streaming recognition state management
         self._streaming_client = None
@@ -312,6 +313,25 @@ class ProductionSTTServiceV2:
             except Exception as fallback_error:
                 print(f"❌ Fallback config also failed: {fallback_error}")
                 self._streaming_config = None
+                
+            # 🚨 CRITICAL: If config initialization completely failed, create emergency fallback
+            if self._streaming_config is None:
+                print("🚨 EMERGENCY: Creating minimal working config as last resort...")
+                try:
+                    # Most basic possible config - just language code
+                    emergency_config = speech_v2.RecognitionConfig(
+                        language_codes=["en-US"]
+                    )
+                    
+                    self._streaming_config = speech_v2.StreamingRecognitionConfig(
+                        config=emergency_config
+                    )
+                    print("✅ Emergency minimal config created successfully")
+                    
+                except Exception as emergency_error:
+                    print(f"❌ Even emergency config failed: {emergency_error}")
+                    print("⚠️ Running without streaming recognition capabilities")
+                    self._streaming_config = None
     
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
         """Set callback for real-time transcript segments"""
@@ -337,6 +357,28 @@ class ProductionSTTServiceV2:
             except queue.Full:
                 self._handle_error("audio_queue_full", "Audio queue is full, dropping audio chunk.")
 
+    def _handle_error(self, error_type: str, message: str) -> None:
+        """Handle errors with logging and optional callback notification"""
+        print(f"❌ {error_type}: {message}")
+        
+        # Call error callback if set
+        if self._error_callback:
+            try:
+                # Create a simple exception for the callback
+                error = Exception(f"{error_type}: {message}")
+                self._error_callback(error_type, error)
+            except Exception as callback_error:
+                print(f"❌ Error in error callback: {callback_error}")
+
+    def _report_status(self) -> None:
+        """Report current status via callback if set"""
+        if self._status_callback:
+            try:
+                status = self.get_status()
+                self._status_callback(status)
+            except Exception as callback_error:
+                print(f"❌ Error in status callback: {callback_error}")
+
     def _start_streaming_recognition(self) -> None:
         """
         Manages the lifecycle of streaming recognition sessions. This is the
@@ -346,6 +388,22 @@ class ProductionSTTServiceV2:
             if not self._has_credentials:
                 self._run_mock_mode()
                 break # Exit after mock mode finishes
+
+            # 🚨 CRITICAL FIX: Validate streaming config before using it
+            if self._streaming_config is None:
+                error_msg = "Streaming configuration is not initialized. Attempting to re-initialize..."
+                print(f"⚠️ {error_msg}")
+                
+                # Try to re-initialize the config
+                self._initialize_streaming_config()
+                
+                # If it's still None after re-initialization, give up
+                if self._streaming_config is None:
+                    error_msg = "Failed to re-initialize streaming configuration. Cannot start recognition."
+                    print(f"❌ {error_msg}")
+                    self._handle_error("config_error", error_msg)
+                    time.sleep(1)
+                    continue
 
             print("🚀 Starting new streaming session...")
             self._report_status()
@@ -536,8 +594,8 @@ class ProductionSTTServiceV2:
         self._session_start_time = time.time()
         self._chunk_counter = 0
 
-        # The master thread is now managed by the web API's start/stop calls
-        # We just need to ensure the processing thread starts if it's not running
+        # In frontend streaming mode, the processing thread becomes the master thread
+        # We start the streaming recognition thread that handles audio processing
         if self._processing_thread is None or not self._processing_thread.is_alive():
             self._stop_event.clear()
             self._processing_thread = threading.Thread(
@@ -545,6 +603,9 @@ class ProductionSTTServiceV2:
                 daemon=True
             )
             self._processing_thread.start()
+            
+            # For compatibility with stop_recording, also set _master_thread
+            self._master_thread = self._processing_thread
 
         return {
             "status": "initialized",
@@ -716,7 +777,7 @@ class ProductionSTTServiceV2:
     
     def get_transcript(self, format_type: str = "full") -> Dict[str, Any]:
         """
-        Get transcript in various formats
+        Get the full transcript of the conversation.
         
         Args:
             format_type: "full", "recent", "by_speaker", "segments"

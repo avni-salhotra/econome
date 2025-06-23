@@ -1,57 +1,56 @@
+#!/usr/bin/env python3
+"""
+Gemini API Service for Conversation Analysis
+
+This module provides functions to interact with the Gemini API for:
+- Summarizing conversations
+- Extracting action items
+
+It includes mock functionality for development without credentials.
+"""
+
 import os
 import json
-import google.generativeai as genai
-from google.oauth2 import service_account
 from typing import List, Dict
 
-# --- Configuration ---
+# Google AI imports
+try:
+    import google.generativeai as genai
+    from google.oauth2 import service_account
+    GOOGLE_API_AVAILABLE = True
+except ImportError:
+    GOOGLE_API_AVAILABLE = False
+    genai = None
+    service_account = None
 
+# --- Constants ---
 GENERATION_MODEL = "models/gemini-1.5-pro"
 GENERATION_PARAMS = {
+    "candidate_count": 1,
     "temperature": 0.7,
-    "top_p": 1.0,
-    "top_k": 40,
-    "max_output_tokens": 1024
 }
 
 # --- Initialization ---
 
-def _initialize_gemini(credentials_path: str = "gemini-credentials.json"):
-    """Initialize Gemini with proper error handling and service account credentials"""
-    try:
-        # Try multiple credential paths (for Cloud Run and local development)
-        credential_paths = [
-            credentials_path,  # Default path (local development)
-            "/app/secrets/gemini/credentials.json",  # New Cloud Run path (separate directories)
-            "/app/secrets/gemini-credentials.json",  # Legacy Cloud Run path (backward compatibility)
-            "/secrets/gemini-credentials.json",  # Legacy Cloud Run path (backward compatibility)
-        ]
-
-        for path in credential_paths:
-            if os.path.exists(path):
-                credentials = service_account.Credentials.from_service_account_file(path)
-                genai.configure(credentials=credentials)
-                print(f"✅ Gemini initialized with service account credentials from {path}")
-                return genai.GenerativeModel(GENERATION_MODEL)
-
-        # Fallback to API key if available
-        if os.getenv("GOOGLE_API_KEY"):
-            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
-            print("✅ Gemini initialized with API key")
-            return genai.GenerativeModel(GENERATION_MODEL)
-
-        # Fallback to default credentials
-        if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
-            genai.configure()
-            print("✅ Gemini initialized with application default credentials")
-            return genai.GenerativeModel(GENERATION_MODEL)
-
-        # No credentials found
-        print("⚠️ No Gemini credentials found - running in mock mode")
+def _initialize_gemini():
+    """Initialize the Gemini client with service account credentials."""
+    if not GOOGLE_API_AVAILABLE:
+        print("⚠️ Google AI libraries not installed, running in mock mode.")
         return None
 
+    try:
+        # Look for credentials in the standard path for this project
+        creds_path = "gemini-credentials.json"
+        if os.path.exists(creds_path):
+            credentials = service_account.Credentials.from_service_account_file(creds_path)
+            genai.configure(credentials=credentials)
+            print("✅ Gemini initialized with service account credentials from gemini-credentials.json")
+            return genai.GenerativeModel(GENERATION_MODEL)
+        else:
+            print("⚠️ gemini-credentials.json not found, running in mock mode.")
+            return None
     except Exception as e:
-        print(f"⚠️ Gemini initialization failed: {e}")
+        print(f"❌ Failed to initialize Gemini: {e}")
         return None
 
 # Initialize model (may be None if no credentials)
@@ -59,7 +58,7 @@ model = _initialize_gemini()
 
 # --- Functions ---
 
-def summarize_conversation(text: str) -> str:
+async def summarize_conversation(text: str) -> str:
     """
     Use Gemini to organize and structure stream-of-consciousness thoughts
     into a coherent, readable format while preserving all important information.
@@ -69,37 +68,27 @@ def summarize_conversation(text: str) -> str:
 
     try:
         prompt = (
-            "You are helping someone organize their stream-of-consciousness thoughts into a clear, structured format. "
-            "Your goal is NOT to summarize or compress information, but to organize and improve readability while preserving all important details.\n\n"
-            
-            "Please reorganize the following spoken thoughts by:\n"
-            "1. **Preserving ALL important information** - don't remove or compress anything meaningful\n"
-            "2. **Organizing related ideas together** - group thoughts that belong together even if they were mentioned separately\n"
-            "3. **Creating logical flow** - arrange ideas in a sensible order with smooth transitions\n"
-            "4. **Cleaning up speech patterns** - remove filler words (um, uh, you know), false starts, and repetitions\n"
-            "5. **Adding structure** - use clear paragraphs and natural transitions between different topics\n"
-            "6. **Maintaining the speaker's voice** - keep their personal style and tone, just make it more organized\n\n"
-            
-            "Think of this as taking messy handwritten notes and typing them up neatly - same content, better organization.\n\n"
-            
+            "You are an expert at concisely summarizing conversations. "
+            "Your task is to organize and structure the following stream-of-consciousness "
+            "thoughts into a coherent, readable summary. Preserve all important "
+            "information, decisions, and outcomes. Use markdown for formatting if needed.\n\n"
             "Original thoughts:\n"
             f"{text}\n\n"
             
             "Organized version:"
         )
         
-        response = model.generate_content(prompt, generation_config=GENERATION_PARAMS)
+        response = await model.generate_content_async(prompt, generation_config=GENERATION_PARAMS)
         return response.text.strip()
     except Exception as e:
         print(f"❌ Gemini organization error: {e}")
         return f"Organization unavailable due to error: {str(e)}"
 
 
-def extract_action_items(text: str) -> List[Dict]:
+async def extract_action_items(text: str) -> List[Dict]:
     """
     Use Gemini to extract action items relevant to a single user context.
-    Returns a list of dicts with keys: type, action, deadline, and optionally recipient.
-    FIXED VERSION with safe JSON parsing.
+    Returns a list of dicts with 'action', 'type', 'deadline', 'recipient'.
     """
     if model is None:
         return [
@@ -113,53 +102,49 @@ def extract_action_items(text: str) -> List[Dict]:
             '- "todo": things the user must do\n'
             '- "communicate": messages the user intends to send to someone else\n'
             '- "reminder": events or tasks the user should be reminded about\n\n'
-            "For each action item, return a JSON object with:\n"
-            '- "type": one of "todo", "communicate", or "reminder"\n'
-            '- "action": the description of the task or message\n'
-            '- "deadline": if any (e.g., "Tuesday", "next week"), otherwise null\n'
-            '- "recipient": if the user plans to communicate with someone (e.g., "Amber"), otherwise null\n\n'
-            "Respond with a JSON list of these items. Example format:\n"
-            '[\n'
-            '  {"type": "todo", "action": "Send proposal", "deadline": "Friday", "recipient": null},\n'
-            '  {"type": "communicate", "action": "Follow up on contract", "deadline": null, "recipient": "Amber"}\n'
-            ']\n\n'
-            "Transcript:\n"
-            f"{text}"
+            "Return the output as a JSON list of objects, where each object has the keys "
+            "'action', 'type', 'deadline', and 'recipient'. If a field is not present, use null. "
+            "Do not include any preamble or explanation, only the JSON list.\n\n"
+            "Conversation Text:\n"
+            f"{text}\n\n"
+            "JSON Output:"
         )
-
-        response = model.generate_content(prompt, generation_config=GENERATION_PARAMS)
-        response_text = response.text.strip()
+        
+        response = await model.generate_content_async(prompt, generation_config=GENERATION_PARAMS)
+        
+        # Clean up response before parsing
+        cleaned_response = response.text.strip()
 
         # Try to extract JSON from the response
         try:
             # Look for JSON content between brackets
-            start_idx = response_text.find('[')
-            end_idx = response_text.rfind(']') + 1
+            start_idx = cleaned_response.find('[')
+            end_idx = cleaned_response.rfind(']') + 1
             
             if start_idx != -1 and end_idx != 0:
-                json_str = response_text[start_idx:end_idx]
+                json_str = cleaned_response[start_idx:end_idx]
                 parsed = json.loads(json_str)
                 
                 if isinstance(parsed, list):
                     return parsed
                 else:
-                    return [{"error": "Response was not a list", "raw_output": response_text}]
+                    return [{"error": "Response was not a list", "raw_output": cleaned_response}]
             else:
                 # No JSON brackets found, try parsing the whole response
-                parsed = json.loads(response_text)
+                parsed = json.loads(cleaned_response)
                 if isinstance(parsed, list):
                     return parsed
                 else:
-                    return [{"error": "Response was not a JSON list", "raw_output": response_text}]
+                    return [{"error": "Response was not a JSON list", "raw_output": cleaned_response}]
                     
         except json.JSONDecodeError as e:
             print(f"❌ JSON parsing error: {e}")
-            print(f"Raw response: {response_text}")
+            print(f"Raw response: {cleaned_response}")
             
             # Return a fallback action item if parsing fails
             return [{
                 "error": "Failed to parse Gemini JSON output",
-                "raw_output": response_text,
+                "raw_output": cleaned_response,
                 "type": "todo",
                 "action": "Review AI-extracted action items manually",
                 "deadline": "Soon",
@@ -168,16 +153,10 @@ def extract_action_items(text: str) -> List[Dict]:
             
     except Exception as e:
         print(f"❌ Gemini action item extraction error: {e}")
-        return [{
-            "error": f"Gemini API error: {str(e)}",
-            "type": "todo", 
-            "action": "Check system logs for AI processing errors",
-            "deadline": "Now",
-            "recipient": None
-        }]
+        return [{"action": f"Error extracting action items: {e}", "type": "error", "deadline": None, "recipient": None}]
 
 
-def test_gemini_integration():
+async def test_gemini_integration():
     """Test function to verify Gemini integration works"""
     
     print("🧪 Testing Gemini Integration...")
@@ -189,15 +168,34 @@ def test_gemini_integration():
     """
     
     print("Testing summarization...")
-    summary = summarize_conversation(test_transcript)
+    summary = await summarize_conversation(test_transcript)
     print(f"Summary: {summary}")
     
     print("\nTesting action item extraction...")
-    action_items = extract_action_items(test_transcript)
+    action_items = await extract_action_items(test_transcript)
     print(f"Action items: {json.dumps(action_items, indent=2)}")
     
     print("✅ Gemini integration test complete")
 
 
+# --- Self-Test ---
+
+async def _test_gemini_functions():
+    """Test both functions with a sample text if run as a script."""
+    sample_text = (
+        "Hey team, so for the project update, I think we need to finalize the "
+        "prepare the slides for the Friday presentation."
+    )
+    
+    print("--- Testing Conversation Summary ---")
+    summary = await summarize_conversation(sample_text)
+    print("Summary:", summary)
+    
+    print("\n--- Testing Action Item Extraction ---")
+    action_items = await extract_action_items(sample_text)
+    print("Action Items:", json.dumps(action_items, indent=2))
+
+
 if __name__ == "__main__":
-    test_gemini_integration()
+    import asyncio
+    asyncio.run(_test_gemini_functions())

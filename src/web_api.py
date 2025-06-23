@@ -309,12 +309,15 @@ async def start_conversation():
     connection_id = str(uuid.uuid4())
     logger.info(f"🚀 Starting new conversation: {connection_id}")
 
-    # Initialize the full system here, now with the required callback
+    # Initialize the full system here
     conversation_system = ConversationIntelligenceSystem(
         session_id=connection_id,
-        sse_callback=send_sse_event  # Pass the callback function
+        sse_callback=send_sse_event
     )
     active_conversations[connection_id] = conversation_system
+    
+    # ACTIVATE the system
+    conversation_system.start()
 
     # Create a queue for SSE events
     sse_connections[connection_id] = asyncio.Queue()
@@ -335,34 +338,36 @@ async def receive_audio_chunk(connection_id: str, request: Request):
 
     conversation_system = active_conversations[connection_id]
     
-    try:
-        # Read the raw audio data from the request body
-        audio_data = await request.body()
+    # Check if the audio queue is full (back-pressure)
+    audio_queue = conversation_system.get_audio_queue()
+    if audio_queue.full():
+        logger.warning(f"Audio queue full for {connection_id}, returning 429.")
+        raise HTTPException(status_code=429, detail="Audio queue is full, please try again later.")
+
+    # Read raw audio data from the request body
+    audio_data = await request.body()
         
-        if not audio_data:
-            logger.warning(f"Received empty audio chunk for {connection_id}")
-            return JSONResponse(status_code=400, content={"message": "No audio data received"})
+    if not audio_data:
+        logger.warning(f"Received empty audio chunk for {connection_id}")
+        return JSONResponse(status_code=400, content={"message": "No audio data received"})
 
-        # Log the chunk reception for observability
-        logger.info({
-            "event": "audio_chunk_received",
-            "connection_id": connection_id,
-            "size_bytes": len(audio_data),
-            "content_type": request.headers.get("content-type", "unknown"),
-        })
+    # Log the chunk reception for observability
+    logger.info({
+        "event": "audio_chunk_received",
+        "connection_id": connection_id,
+        "size_bytes": len(audio_data),
+        "content_type": request.headers.get("content-type", "unknown"),
+    })
 
-        # Queue the raw audio data directly
-        success = conversation_system.stt_service.queue_audio_chunk(audio_data)
+    # Queue the raw audio data directly
+    success = conversation_system.stt_service.queue_audio_chunk(audio_data)
 
-        if success:
-            return PlainTextResponse(status_code=202, content="Chunk received")
-        else:
-            # Service is busy or queue is full, apply back-pressure
-            logger.warning(f"Audio queue full for {connection_id}, returning 429.")
-            return PlainTextResponse(status_code=429, content="Queue full, try again later")
-
-    except Exception as e:
-        logger.error(f"❌ Error processing audio chunk for {connection_id}: {e}")
+    if success:
+        return PlainTextResponse(status_code=202, content="Chunk received")
+    else:
+        # Service is busy or queue is full, apply back-pressure
+        logger.warning(f"Audio queue full for {connection_id}, returning 429.")
+        return PlainTextResponse(status_code=429, content="Queue full, try again later")
 
 @app.post("/api/conversation/{connection_id}/stop")
 async def stop_conversation(connection_id: str):
