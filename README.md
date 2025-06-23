@@ -69,37 +69,29 @@ graph TB
 ### **Enhanced CI/CD Pipeline**
 ```mermaid
 graph LR
-    A[Code Push] --> B[01-Test & Validate]
+    A[Code Push / PR] --> B[01-Test & Validate]
     B --> C[02-Build & Push]
     C --> D[03-Deploy Staging]
-    D --> E[Manual Approval]
-    E --> F[04-Deploy Production]
-    F --> G[99-Manual Operations]
+    D --> E[04-Deploy Production]
+    D --> F[05-Auto Prod (opt)]
+    C --> G[99-Manual Ops]
 
-    B --> B1[Unit Tests]
-    B --> B2[Security Scan]
-    B --> B3[Integration Tests]
-
-    C --> C1[Build Image]
-    C --> C2[Push to GCR]
-    C --> C3[Tag Images]
-
-    D --> D1[Deploy Staging]
-    D --> D2[E2E Tests]
-    D --> D3[Health Checks]
+    B --> B1[Unit + Integration + Security tests]
+    C --> C1[Docker build] --> C2[Push to Artifact Registry]
+    D --> D1[Deploy to Cloud Run] --> D2[Smoke + E2E tests]
 ```
 
 ### 🔧 Technology Stack
 
 | Component | Technology | Purpose |
 |-----------|------------|---------|
-| **Frontend** | HTML5 + JavaScript + Tailwind CSS | Responsive web interface |
-| **Backend** | FastAPI + HTTP + SSE | Real-time API & communication |
-| **Speech Processing** | Google Cloud Speech V2 | Real-time transcription |
-| **AI Analysis** | Gemini 1.5 Pro | Parallel summary + action extraction |
-| **Storage** | Google Firestore with TTL | Ephemeral session data |
-| **Deployment** | Google Cloud Run | Serverless container hosting |
-| **CI/CD** | Google Cloud Build | Automated deployment |
+| **Frontend** | HTML5 + Vanilla JS (MediaRecorder) + Tailwind CSS | Record & stream audio, display live transcripts via Server-Sent Events (SSE) |
+| **Backend** | FastAPI + HTTP + SSE | Real-time API & event push – no WebSockets required |
+| **Speech Processing** | Google Cloud Speech-to-Text V2 (latest_long) | Streaming transcription (≤100 ms chunks) |
+| **AI Analysis** | Gemini 1.5 Pro | Parallel summarisation & action-item extraction |
+| **Storage** | Firestore + TTL (24 h) | Ephemeral session metadata |
+| **Container Runtime** | Cloud Run (us-central1) | Serverless autoscale, 1-10 instances |
+| **CI/CD** | GitHub Actions (01-05 workflows) | Build, push, deploy, and manual ops |
 
 ---
 
@@ -155,15 +147,15 @@ econome/
 │       └── index.html         # Web interface
 │
 ├── 🚀 Deployment & DevOps
-│   ├── devops/                # DevOps configurations
-│   │   ├── cloudbuild-ci.yaml     # CI pipeline (build only)
-│   │   ├── cloudbuild-deploy.yaml # Backend deployment
-│   │   ├── cloudbuild-ui.yaml     # Frontend deployment
-│   │   ├── cloudbuild-prod.yaml   # Emergency full deployment
-│   │   ├── Dockerfile             # Backend container
-│   │   ├── Dockerfile.ui          # Frontend container
-│   │   ├── deploy.sh              # Smart deployment script
-│   │   └── README.md              # DevOps documentation
+│   ├── devops/                  # Container & legacy Cloud Build configs (kept for reference)
+│   │   └── Dockerfile[.ui]      # Build context
+│   ├── .github/workflows/       # —— Primary CI/CD ——
+│   │   ├── 01-test-and-validate.yml
+│   │   ├── 02-build-and-push.yml
+│   │   ├── 03-deploy-staging.yml
+│   │   ├── 04-deploy-production.yml
+│   │   ├── 05-auto-production-deploy.yml (opt)
+│   │   └── 99-manual-operations.yml
 │   ├── scripts/               # Setup and utility scripts
 │   │   ├── deploy.sh          # Automated deployment script
 │   │   ├── setup-local.sh     # Local development setup
@@ -285,29 +277,26 @@ git push -u origin main
 ```
 
 ### **GitHub Actions CI/CD**
-The project follows SRE best practices with separated CI and CD:
+The pipeline is split into small, composable workflows:
 
-#### **Continuous Integration (Automated)**
-- **Trigger**: Push to `main` branch
-- **Actions**: Build, test, and push images to registry
-- **No deployment**: CI only validates and prepares artifacts
+| ID | Workflow | Trigger |
+|----|-----------|---------|
+| 01 | Test & Validate | `pull_request`, `push` to feature/fix branches |
+| 02 | Build & Push | `push` to `main`, or success of 01 |
+| 03 | Deploy Staging | Called by 02 after image push |
+| 04 | Deploy Production | Manual (`workflow_dispatch`) |
+| 05 | Auto Production Deploy (optional) | Success of 03 (disabled by default) |
+| 99 | Manual Operations | On-demand ops: rollback, scale, logs |
 
-#### **Continuous Deployment (Manual)**
-- **Trigger**: Manual workflow dispatch
-- **Actions**: Deploy specific images to chosen environments
-- **Benefits**: Environment control, rollback capability, deployment gates
+Legacy Cloud Build YAMLs are retained under `devops/cloudbuild/` for historical reference but **are no longer used**.
 
-#### **Available Workflows**
-1. **`.github/workflows/deploy.yml`** - CI pipeline (automated)
-2. **`.github/workflows/deploy-manual.yml`** - CD pipeline (manual)
-
-#### **Deployment Commands**
+### **Continuous Deployment commands**
 ```bash
-# Deploy to staging
-gh workflow run deploy-manual.yml -f environment=staging -f image_tag=latest
+# Trigger staging deploy manually (rarely needed)
+gh workflow run "03-deploy-staging.yml" -f image-tag=<build-number> -f build-id=<run_id>
 
-# Deploy to production
-gh workflow run deploy-manual.yml -f environment=production -f image_tag=BUILD_ID
+# Trigger production deploy
+gh workflow run "04-deploy-production.yml" -f image-tag=<build-number> -f confirm-production=DEPLOY
 ```
 
 ---
@@ -383,3 +372,5 @@ MIT License - see [LICENSE](LICENSE) file for details.
 ---
 
 **🎉 Ready to deploy?** Run `./scripts/deploy.sh` and follow the prompts!
+
+> **NOTE:** WebSocket support was removed in favour of HTTP + SSE which works reliably behind Cloud Run's HTTP/2 proxy.
