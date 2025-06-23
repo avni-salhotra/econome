@@ -509,8 +509,11 @@ class ProductionSTTServiceV2:
                 print(f"🔍 AUDIO_BYTES_SENT: length={len(audio_bytes)}, samples={len(audio_int16)}, "
                       f"range=[{audio_int16.min()}, {audio_int16.max()}]")
                 
-                # 🚨 CRITICAL FIX: Use 'audio' not 'audio_content' for Speech V2
-                yield speech_v2.StreamingRecognizeRequest(audio=audio_bytes)
+                # 🚨 CRITICAL FIX: Split payload into ≤25 600-byte slices per API limits
+                max_bytes = 25600  # Speech-to-Text V2 limit per StreamingRecognizeRequest
+                for start in range(0, len(audio_bytes), max_bytes):
+                    slice_bytes = audio_bytes[start:start + max_bytes]
+                    yield speech_v2.StreamingRecognizeRequest(audio=slice_bytes)
                 
                 self._chunk_counter += 1
                 
