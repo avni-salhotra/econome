@@ -1,0 +1,217 @@
+name: "05 - Auto Production Deploy (Optional)"
+
+# 🚀 OPTIONAL: Automatic production deployment after staging success
+# Enable this by uncommenting the workflow_run trigger below
+# and commenting out the workflow_dispatch trigger
+
+on:
+  # ===================================
+  # AUTOMATIC TRIGGER (DISABLED BY DEFAULT)
+  # ===================================
+  # Uncomment to enable automatic production deployment
+  # workflow_run:
+  #   workflows: ["03 - Deploy Staging"]
+  #   types: [completed]
+  #   branches: [ main ]
+  
+  # ===================================
+  # MANUAL TRIGGER (ENABLED BY DEFAULT)
+  # ===================================
+  workflow_dispatch:
+    inputs:
+      enable-auto-deploy:
+        description: 'Enable automatic production deployment going forward?'
+        required: false
+        default: false
+        type: boolean
+
+# Security: Production deployment permissions
+permissions:
+  contents: read
+  actions: write
+
+env:
+  PROJECT_ID: econome-hackathon
+  SERVICE_NAME: econome
+  STAGING_SERVICE_NAME: econome-staging
+  REGION: us-central1
+  REGISTRY: gcr.io
+  ENVIRONMENT: production
+
+jobs:
+  # ===================================
+  # CHECK IF AUTO-DEPLOY SHOULD RUN
+  # ===================================
+  check-auto-deploy:
+    name: "🤖 Check Auto-Deploy Eligibility"
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run if staging deployment succeeded (for workflow_run)
+    # or if manually triggered
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'workflow_run' && 
+       github.event.workflow_run.conclusion == 'success')
+    
+    outputs:
+      should-deploy: ${{ steps.check.outputs.should-deploy }}
+      image-tag: ${{ steps.check.outputs.image-tag }}
+    
+    steps:
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🤖 Check deployment eligibility"
+      id: check
+      run: |
+        echo "🤖 Checking if auto-deployment should proceed..."
+        
+        if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+          echo "should-deploy=true" >> $GITHUB_OUTPUT
+          echo "image-tag=latest" >> $GITHUB_OUTPUT
+          echo "✅ Manual trigger - proceeding with deployment"
+          exit 0
+        fi
+        
+        # For workflow_run, check staging health and get image tag
+        echo "🧪 Checking staging deployment..."
+        
+        STAGING_URL=$(gcloud run services describe ${{ env.STAGING_SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)" 2>/dev/null || echo "")
+        
+        if [[ -z "$STAGING_URL" ]]; then
+          echo "should-deploy=false" >> $GITHUB_OUTPUT
+          echo "❌ Staging service not found"
+          exit 0
+        fi
+        
+        # Health check staging
+        if curl -f -s "$STAGING_URL/health" > /dev/null; then
+          echo "✅ Staging health check passed"
+          
+          # Get staging image tag
+          STAGING_IMAGE=$(gcloud run services describe ${{ env.STAGING_SERVICE_NAME }} \
+            --region=${{ env.REGION }} \
+            --format="value(spec.template.spec.containers[0].image)")
+          
+          # Extract tag from image
+          IMAGE_TAG=$(echo "$STAGING_IMAGE" | cut -d':' -f2)
+          
+          echo "should-deploy=true" >> $GITHUB_OUTPUT
+          echo "image-tag=$IMAGE_TAG" >> $GITHUB_OUTPUT
+          echo "✅ Auto-deployment approved for tag: $IMAGE_TAG"
+        else
+          echo "should-deploy=false" >> $GITHUB_OUTPUT
+          echo "❌ Staging health check failed - skipping auto-deployment"
+        fi
+
+  # ===================================
+  # AUTOMATIC PRODUCTION DEPLOYMENT
+  # ===================================
+  auto-deploy-production:
+    name: "🚀 Auto-Deploy to Production"
+    runs-on: ubuntu-latest
+    needs: check-auto-deploy
+    if: needs.check-auto-deploy.outputs.should-deploy == 'true'
+    timeout-minutes: 20
+    environment: production
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "🔐 Authenticate to Google Cloud"
+      uses: google-github-actions/auth@v2
+      with:
+        credentials_json: ${{ secrets.GCP_CREDENTIALS }}
+        project_id: ${{ env.PROJECT_ID }}
+
+    - name: "☁️ Set up Google Cloud CLI"
+      uses: google-github-actions/setup-gcloud@v2
+
+    - name: "🚀 Deploy to Production"
+      id: deploy
+      run: |
+        IMAGE_TAG="${{ needs.check-auto-deploy.outputs.image-tag }}"
+        echo "🚀 Auto-deploying to production..."
+        echo "📋 Image tag: $IMAGE_TAG"
+
+        SERVICE_URL=$(gcloud run deploy ${{ env.SERVICE_NAME }} \
+          --image="${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/econome:$IMAGE_TAG" \
+          --platform=managed \
+          --region=${{ env.REGION }} \
+          --allow-unauthenticated \
+          --memory=2Gi \
+          --cpu=2 \
+          --concurrency=100 \
+          --timeout=3600 \
+          --max-instances=10 \
+          --min-instances=1 \
+          --set-env-vars="GOOGLE_CLOUD_PROJECT=${{ env.PROJECT_ID }},ENVIRONMENT=${{ env.ENVIRONMENT }}" \
+          --set-secrets="/app/secrets/speech/credentials.json=speech-credentials:latest" \
+          --set-secrets="/app/secrets/gemini/credentials.json=gemini-credentials:latest" \
+          --tag="auto-deploy-${{ github.run_id }}" \
+          --format="value(status.url)")
+
+        echo "✅ Auto-deployment completed successfully"
+        echo "🌐 Production URL: $SERVICE_URL"
+
+    - name: "🧪 Post-deployment validation"
+      run: |
+        echo "🧪 Validating auto-deployment..."
+        sleep 30
+        
+        SERVICE_URL=$(gcloud run services describe ${{ env.SERVICE_NAME }} \
+          --region=${{ env.REGION }} \
+          --format="value(status.url)")
+        
+        # Quick health check
+        if curl -f -s "$SERVICE_URL/health" > /dev/null; then
+          echo "✅ Auto-deployment validation passed"
+        else
+          echo "❌ Auto-deployment validation failed"
+          exit 1
+        fi
+
+    - name: "📢 Deployment notification"
+      run: |
+        echo "# 🤖 Auto-Production Deployment Complete" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "## ✅ Deployment Successful" >> $GITHUB_STEP_SUMMARY
+        echo "Production was automatically deployed after staging validation." >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "- **Image Tag**: ${{ needs.check-auto-deploy.outputs.image-tag }}" >> $GITHUB_STEP_SUMMARY
+        echo "- **Deployment Type**: Automatic" >> $GITHUB_STEP_SUMMARY
+        echo "- **Trigger**: Staging deployment success" >> $GITHUB_STEP_SUMMARY
+
+  # ===================================
+  # ENABLE AUTO-DEPLOY CONFIGURATION
+  # ===================================
+  configure-auto-deploy:
+    name: "⚙️ Configure Auto-Deploy"
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.enable-auto-deploy
+    
+    steps:
+    - name: "📥 Checkout code"
+      uses: actions/checkout@v4
+
+    - name: "⚙️ Enable automatic production deployment"
+      run: |
+        echo "⚙️ To enable automatic production deployment:"
+        echo "1. Edit .github/workflows/05-auto-production-deploy.yml"
+        echo "2. Uncomment the workflow_run trigger"
+        echo "3. Comment out the workflow_dispatch trigger"
+        echo "4. Commit and push the changes"
+        echo ""
+        echo "This will make production deploy automatically after staging succeeds."
+        echo ""
+        echo "⚠️ WARNING: This removes the manual confirmation step!"
+        echo "Only enable if you're confident in your staging tests." 
