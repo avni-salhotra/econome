@@ -199,14 +199,14 @@ steps:
         echo "🧹 Cleaning up old images..."
         
         # Keep last 15 images, delete older ones
-        OLD_IMAGES=$(gcloud container images list-tags gcr.io/$PROJECT_ID/econome \
+        IMAGES_TO_DELETE=$(gcloud container images list-tags gcr.io/$PROJECT_ID/econome \
           --limit=999 \
           --sort-by=~TIMESTAMP \
           --format="get(digest)" | tail -n +16)
         
-        if [ -n "$OLD_IMAGES" ]; then
+        if [ -n "$IMAGES_TO_DELETE" ]; then
           echo "🗑️ Deleting old images..."
-          for digest in $OLD_IMAGES; do
+          for digest in $IMAGES_TO_DELETE; do
             echo "Deleting: gcr.io/$PROJECT_ID/econome@$digest"
             gcloud container images delete "gcr.io/$PROJECT_ID/econome@$digest" \
               --quiet --force-delete-tags || echo "⚠️ Failed to delete $digest"
