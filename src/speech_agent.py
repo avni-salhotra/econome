@@ -191,22 +191,18 @@ class ProductionSTTServiceV2:
                     break
 
             if credentials_found:
-                # OPTIMIZED: Use regional endpoint for better performance
+                # Use global endpoint as per Speech V2 documentation
                 from google.api_core.client_options import ClientOptions
-                client_options = ClientOptions(
-                    api_endpoint="us-central1-speech.googleapis.com"
-                )
-
+                
                 self.speech_client = speech_v2.SpeechClient(
-                    credentials=self.credentials,
-                    client_options=client_options
+                    credentials=self.credentials
                 )
                 self._has_credentials = True
 
-                # Speech V2 uses recognizers - set up the recognizer path
-                self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
+                # Speech V2 uses recognizers - use global recognizer as per official docs
+                self.recognizer = f"projects/{self.project_id}/locations/global/recognizers/_"
 
-                print("✅ Google Cloud Speech V2 client initialized (us-central1 region)")
+                print("✅ Google Cloud Speech V2 client initialized (global recognizer)")
                 
                 # Initialize streaming config after client is ready
                 self._initialize_streaming_config()
@@ -227,27 +223,20 @@ class ProductionSTTServiceV2:
             return
             
         try:
-            # 🎯 CRITICAL: Proper Speech V2 streaming configuration with validation
-            language_codes = ["en-US"]  # Ensure this is never empty
-            
-            if not language_codes or len(language_codes) == 0:
-                raise ValueError("language_codes cannot be empty")
+            # 🎯 CRITICAL: Match the official Speech V2 documentation pattern exactly
+            recognition_config = speech_v2.RecognitionConfig(
+                auto_decoding_config=speech_v2.AutoDetectDecodingConfig(),
+                language_codes=["en-US"],  # This must never be empty
+                model="long",  # Match official documentation
+                features=speech_v2.RecognitionFeatures(
+                    enable_automatic_punctuation=True,
+                    enable_word_time_offsets=True,
+                    enable_word_confidence=True,
+                ),
+            )
             
             self._streaming_config = speech_v2.StreamingRecognitionConfig(
-                config=speech_v2.RecognitionConfig(
-                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
-                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                        sample_rate_hertz=self.sample_rate,
-                        audio_channel_count=1,
-                    ),
-                    language_codes=language_codes,  # V2 uses language_codes (plural) - VALIDATED
-                    model="latest_long",
-                    features=speech_v2.RecognitionFeatures(
-                        enable_automatic_punctuation=True,
-                        enable_word_time_offsets=True,
-                        enable_word_confidence=True,
-                    ),
-                ),
+                config=recognition_config,
                 streaming_features=speech_v2.StreamingRecognitionFeatures(
                     interim_results=True,  # 🚨 CRITICAL: Enable real-time interim results
                 )
@@ -406,8 +395,8 @@ class ProductionSTTServiceV2:
                 audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
                 audio_bytes = audio_int16.tobytes()
                 
-                # Yield streaming request with audio content
-                yield speech_v2.StreamingRecognizeRequest(audio_content=audio_bytes)
+                # 🚨 CRITICAL FIX: Use 'audio' not 'audio_content' for Speech V2
+                yield speech_v2.StreamingRecognizeRequest(audio=audio_bytes)
                 
                 self._chunk_counter += 1
                 
