@@ -540,7 +540,15 @@ class ProductionSTTServiceV2:
                     continue
 
                 # Process the streaming response
-                self._handle_streaming_response(response)
+                try:
+                    self._handle_streaming_response(response)
+                finally:
+                    # 🔍 DEBUG: Log empty or unparsed responses for investigation
+                    if not getattr(response, 'results', None):
+                        print("🔍 STREAMING_DEBUG: empty results in response (event_time: {} error: {})".format(
+                            getattr(response, 'speech_event_type', 'N/A'),
+                            getattr(response, 'error', None)
+                        ))
                 
         except Exception as e:
             print(f"❌ Streaming response processing error: {e}")
