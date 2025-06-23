@@ -316,11 +316,23 @@ async def start_conversation():
     )
     active_conversations[connection_id] = conversation_system
     
+    # 🔧 CRITICAL FIX: Set the event loop on the orchestration agent
+    # This enables proper SSE forwarding from background threads
+    current_loop = asyncio.get_running_loop()
+    orchestration_agent = conversation_system.get_agent("orchestration")
+    if orchestration_agent:
+        orchestration_agent.set_event_loop(current_loop)
+        logger.info(f"✅ Event loop set for orchestration agent: {connection_id}")
+    
     # ACTIVATE the system
     conversation_system.start()
 
     # Create a queue for SSE events
     sse_connections[connection_id] = asyncio.Queue()
+
+    # 🔧 CRITICAL FIX: Set up enhanced callback for SSE forwarding
+    # This ensures transcripts are forwarded to the frontend
+    await start_frontend_streaming_mode(connection_id, conversation_system)
 
     logger.info(f"✅ System initialized for {connection_id}. Ready for audio.")
 
@@ -466,8 +478,9 @@ async def send_sse_event(connection_id: str, event_data: dict):
 # Replace WebSocket message logging with SSE events
 async def send_conversation_event(connection_id: str, message: dict):
     """Send conversation event as SSE"""
+    logger.info(f"📤 Sending SSE event: {connection_id} -> {message.get('type', 'unknown')} -> {message.get('text', '')[:20]}")
     await send_sse_event(connection_id, message)
-    logger.info(f"📤 SSE event sent: {connection_id} -> {message.get('type', 'unknown')}")
+    logger.info(f"✅ SSE event sent successfully")
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
     """
@@ -560,6 +573,7 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
                 def _forward_transcript(segment: TranscriptSegment):
                     """Thread-safe forwarding of STT segments to SSE queue"""
                     try:
+                        logger.info(f"📨 Forwarding transcript to SSE: {segment.text[:30]}...")
                         # Forward both interim and final messages.  The frontend will
                         # distinguish them via the "is_final" flag and render interim
                         # text in-place (non-appending) while appending finals.
@@ -578,12 +592,31 @@ async def start_frontend_streaming_mode(connection_id: str, conversation_system:
                             ),
                             loop,
                         )
-                    except RuntimeError:
+                    except RuntimeError as e:
                         # Event-loop is closed or not running – ignore
+                        logger.warning(f"⚠️ Could not forward to SSE: {e}")
                         pass
 
-                # Register the callback only once per connection
-                stt_service.set_transcript_callback(_forward_transcript)
+                # 🚨 FIX: Don't overwrite existing callback - add SSE forwarding to orchestration
+                # Instead of overriding the callback, get the orchestration agent and enhance its callback
+                orchestration_agent = conversation_system.get_agent("orchestration")
+                if orchestration_agent and hasattr(orchestration_agent, 'handle_transcript_segment'):
+                    # Store original callback
+                    original_callback = orchestration_agent.handle_transcript_segment
+                    
+                    def enhanced_callback(segment: TranscriptSegment):
+                        """Combined callback that handles both orchestration and SSE forwarding"""
+                        logger.info(f"🔧 Enhanced callback called: {segment.text[:30]}...")
+                        # Call original orchestration logic
+                        original_callback(segment)
+                        # Forward to SSE
+                        _forward_transcript(segment)
+                    
+                    # Set the enhanced callback
+                    stt_service.set_transcript_callback(enhanced_callback)
+                else:
+                    # Fallback: just set SSE forwarding if orchestration not available
+                    stt_service.set_transcript_callback(_forward_transcript)
 
                 # Optionally raise queue capacity to handle burst traffic
                 try:

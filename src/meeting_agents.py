@@ -26,34 +26,54 @@ class OrchestrationAgent(Agent):
         # THE FIX: Assign all instance variables BEFORE calling super().__init__
         self.session_id = session_id
         self.sse_callback = sse_callback
+        self.main_loop = None  # Will store reference to main asyncio loop
         super().__init__("orchestration")
         self.full_transcript: List[Dict] = []
+        
+        # Try to get the current event loop for later use
+        try:
+            self.main_loop = asyncio.get_running_loop()
+            print(f"✅ OrchestrationAgent captured main event loop for session {self.session_id}")
+        except RuntimeError:
+            print(f"⚠️ No event loop running during OrchestrationAgent init for session {self.session_id}")
+        
         print(f"✅ OrchestrationAgent initialized for session {self.session_id}")
+
+    def set_event_loop(self, loop):
+        """Allow setting the event loop from the web API"""
+        self.main_loop = loop
+        print(f"✅ Event loop set for OrchestrationAgent {self.session_id}")
 
     def handle_transcript_segment(self, segment: TranscriptSegment):
         """Callback to handle a new transcript segment."""
         if segment.is_final:
             self.full_transcript.append(segment.to_dict())
         
+        # Always log the transcript for debugging
+        print(f"📝 Transcript segment: {segment.text[:50]}..." + (" (final)" if segment.is_final else " (interim)"))
+        
         # Forward to frontend via SSE - FIX: Handle threading properly
-        if self.sse_callback:
+        if self.sse_callback and self.main_loop:
             try:
-                # Try to get existing event loop from the main thread
-                loop = asyncio.get_running_loop()
-                asyncio.run_coroutine_threadsafe(
+                print(f"🚀 Forwarding to SSE: {segment.text[:30]}...")
+                future = asyncio.run_coroutine_threadsafe(
                     self.sse_callback(self.session_id, {
                         "type": "transcript",
                         "text": segment.text,
                         "is_final": segment.is_final,
-                        "confidence": segment.confidence
+                        "confidence": segment.confidence,
+                        "timestamp": segment.timestamp.isoformat(),
+                        "chunk_index": getattr(segment, 'chunk_index', -1)
                     }),
-                    loop
+                    self.main_loop
                 )
-            except RuntimeError:
-                # No event loop running - skip SSE for now
-                # This happens when called from worker threads
-                print(f"📝 Transcript segment: {segment.text[:50]}..." + (" (final)" if segment.is_final else " (interim)"))
-                pass
+                print(f"✅ SSE forwarding scheduled successfully")
+            except Exception as e:
+                print(f"❌ Error forwarding to SSE: {e}")
+        elif not self.sse_callback:
+            print(f"⚠️ No SSE callback available for forwarding")
+        elif not self.main_loop:
+            print(f"⚠️ No event loop available for SSE forwarding")
 
 class ConversationIntelligenceSystem:
     """Manages the entire conversation intelligence system"""
@@ -84,6 +104,15 @@ class ConversationIntelligenceSystem:
     def get_audio_queue(self):
         """Provides access to the audio queue for the web API."""
         return self.stt_service._audio_queue
+
+    def get_agent(self, agent_name: str):
+        """Get agent by name for web API integration"""
+        if agent_name == "stt":
+            return self.stt_agent
+        elif agent_name == "orchestration":
+            return self.orchestration_agent
+        else:
+            return None
 
     async def stop_conversation(self) -> Dict[str, Any]:
         """Stop conversation and get summary"""
