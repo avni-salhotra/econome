@@ -100,141 +100,15 @@ jobs:
         echo "🏷️ Generated labels: $LABELS"
         echo "labels=$LABELS" >> $GITHUB_OUTPUT
 
-    - name: "🏗️ Build and push with Cloud Build"
+    - name: "🏗️ Build & Push (single build)"
       id: build
-      run: |
-        echo "🏗️ Building and pushing image with gcloud builds submit..."
-        echo "📋 Build configuration:"
-        echo "  - Dockerfile: devops/Dockerfile"
-        echo "  - Primary tag: ${{ steps.tags.outputs.build-tag }}"
-        echo "  - All tags: ${{ steps.tags.outputs.tags }}"
-
-        # Parse tags into individual tag arguments
-        TAGS_ARG=""
-        IFS=',' read -ra TAG_ARRAY <<< "${{ steps.tags.outputs.tags }}"
-        for tag in "${TAG_ARRAY[@]}"; do
-          TAGS_ARG="$TAGS_ARG --tag $tag"
-        done
-
-        echo "🏷️ Tag arguments: $TAGS_ARG"
-
-        # Create temporary cloudbuild.yaml for custom Dockerfile location
-        cat > cloudbuild-temp.yaml << EOF
-        steps:
-        - name: 'gcr.io/cloud-builders/docker'
-          args: ['build', '-f', 'devops/Dockerfile', '-t', '\$_IMAGE_TAG', '.']
-        images:
-        - '\$_IMAGE_TAG'
-        EOF
-
-        # Build and push using Cloud Build with custom config
-        BUILD_IDS=()
-        for tag in "${TAG_ARRAY[@]}"; do
-          echo "🏗️ Building and pushing: $tag"
-
-          # Submit build asynchronously to avoid log streaming issues
-          echo "🚀 Submitting build for: $tag"
-          BUILD_OUTPUT=$(gcloud builds submit \
-            --config=cloudbuild-temp.yaml \
-            --substitutions="_IMAGE_TAG=$tag" \
-            --machine-type=e2-highcpu-8 \
-            --disk-size=100GB \
-            --timeout=1200s \
-            --async \
-            . 2>&1)
-
-          if [[ $? -eq 0 ]]; then
-            # Debug: Show the raw output
-            echo "🔍 Raw build output:"
-            echo "$BUILD_OUTPUT"
-            echo "---"
-
-            # Extract build ID from the Cloud Build URL in the output
-            BUILD_ID=$(echo "$BUILD_OUTPUT" | grep -o 'builds/[a-f0-9-]\+' | sed 's/builds\///' | head -1)
-
-            echo "🔍 Extracted build ID: '$BUILD_ID'"
-
-            if [[ -n "$BUILD_ID" && "$BUILD_ID" =~ ^[a-f0-9-]+$ ]]; then
-              BUILD_IDS+=("$BUILD_ID")
-              echo "✅ Build submitted successfully: $BUILD_ID"
-              echo "🔗 Build URL: https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=${{ env.PROJECT_ID }}"
-            else
-              echo "❌ Could not extract valid build ID from output"
-              echo "Expected format: [a-f0-9-]+"
-              echo "Got: '$BUILD_ID'"
-              exit 1
-            fi
-          else
-            echo "❌ Build submission failed for $tag"
-            echo "Error output: $BUILD_OUTPUT"
-            exit 1
-          fi
-        done
-
-        # Check if we have any builds to monitor
-        if [ ${#BUILD_IDS[@]} -eq 0 ]; then
-          echo "❌ No builds were submitted successfully"
-          exit 1
-        fi
-
-        # Wait for all builds to complete
-        echo "⏳ Waiting for ${#BUILD_IDS[@]} builds to complete..."
-        for BUILD_ID in "${BUILD_IDS[@]}"; do
-          echo "🔍 Checking build status: $BUILD_ID"
-
-          # Wait for build completion with timeout
-          TIMEOUT=600  # 🚀 OPTIMIZED: 10 minutes (was 20 minutes)
-          ELAPSED=0
-          INTERVAL=15  # 🚀 OPTIMIZED: 15s polling (was 30s)
-
-          while [ $ELAPSED -lt $TIMEOUT ]; do
-            STATUS=$(gcloud builds describe "$BUILD_ID" --format="value(status)" 2>/dev/null || echo "UNKNOWN")
-
-            case "$STATUS" in
-              "SUCCESS")
-                echo "✅ Build completed successfully: $BUILD_ID"
-                break
-                ;;
-              "FAILURE"|"TIMEOUT"|"CANCELLED")
-                echo "❌ Build failed with status: $STATUS"
-                echo "🔗 Check logs: https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=${{ env.PROJECT_ID }}"
-                exit 1
-                ;;
-              "WORKING"|"QUEUED")
-                echo "⏳ Build in progress ($STATUS)... elapsed: ${ELAPSED}s"
-                sleep $INTERVAL
-                ELAPSED=$((ELAPSED + INTERVAL))
-                ;;
-              *)
-                echo "⚠️ Unknown build status: $STATUS"
-                sleep $INTERVAL
-                ELAPSED=$((ELAPSED + INTERVAL))
-                ;;
-            esac
-          done
-
-          if [ $ELAPSED -ge $TIMEOUT ]; then
-            echo "❌ Build timed out after ${TIMEOUT}s: $BUILD_ID"
-            exit 1
-          fi
-        done
-
-        # Clean up temporary config
-        rm cloudbuild-temp.yaml
-
-        echo "✅ All Cloud Build jobs completed successfully"
-
-        # Get the image digest for the primary build tag
-        echo "📋 Getting image digest for primary tag..."
-        IMAGE_DIGEST=$(gcloud container images describe ${{ steps.tags.outputs.image-base }}:${{ steps.tags.outputs.build-tag }} --format="value(image_summary.digest)" 2>/dev/null || echo "")
-
-        if [[ -n "$IMAGE_DIGEST" ]]; then
-          echo "📋 Image digest: $IMAGE_DIGEST"
-          echo "digest=$IMAGE_DIGEST" >> $GITHUB_OUTPUT
-        else
-          echo "⚠️ Could not retrieve image digest, but build completed successfully"
-          echo "digest=" >> $GITHUB_OUTPUT
-        fi
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: devops/Dockerfile
+        push: true
+        tags: ${{ steps.tags.outputs.tags }}
+        labels: ${{ steps.labels.outputs.labels }}
 
     - name: "📋 Generate build summary"
       run: |
