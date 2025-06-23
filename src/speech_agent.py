@@ -1193,6 +1193,21 @@ class MockSTTService:
         self._is_recording = False
         return {"success": True, "message": "Mock recording stopped", "is_recording": False}
     
+    def initialize_frontend_streaming(self):
+        """Initialize frontend streaming for mock mode"""
+        self._is_recording = True
+        return {
+            "success": True,
+            "message": "Mock frontend streaming initialized",
+            "is_recording": True,
+            "processing_thread_active": True,
+            "audio_queue_size": 0
+        }
+    
+    def queue_audio_chunk(self, audio_array):
+        """Mock audio chunk queuing"""
+        return True
+    
     def get_status(self):
         return STTStatus(
             is_recording=self._is_recording,
