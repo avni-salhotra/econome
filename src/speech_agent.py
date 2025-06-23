@@ -363,8 +363,22 @@ class ProductionSTTServiceV2:
         
         while self._is_recording:
             try:
+                # Only (re)create the streaming session once we have *some* audio
+                # in the queue. Spinning up a session with zero audio causes the
+                # Speech-to-Text service to immediately abort with
+                # "409 Stream timed out after receiving no more client requests".
+                #
+                # By waiting until the first audio chunk is available we ensure
+                # the generator can deliver media within a few milliseconds of
+                # sending the initial config request, eliminating the spurious
+                # timeout and the rapid creation/teardown loop observed in the
+                # logs.
                 with self._stream_lock:
                     if not self._stream_active:
+                        # Defer session creation until at least one chunk is queued
+                        if self._audio_queue.qsize() == 0:
+                            time.sleep(0.05)
+                            continue
                         self._create_streaming_session()
                 
                 # Check if we need to restart the stream (GCP 5-minute limit)
