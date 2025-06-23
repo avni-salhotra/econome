@@ -106,7 +106,7 @@ class ProductionSTTServiceV2:
     Production-ready Speech-to-Text service using Google Cloud Speech V2
     
     Features:
-    - Real-time transcription with configurable chunk sizes
+    - Real-time streaming transcription with bidirectional communication
     - Chirp 2 model for enhanced accuracy
     - Model adaptation for improved name recognition
     - Automatic error recovery
@@ -145,6 +145,19 @@ class ProductionSTTServiceV2:
         self._recording_thread = None
         self._processing_thread = None
 
+        # 🚨 NEW: Streaming recognition state management
+        self._streaming_client = None
+        self._streaming_config = None
+        self._stream_active = False
+        self._stream_lock = threading.Lock()
+        self._restart_stream_event = threading.Event()
+        
+        # Stream health monitoring
+        self._stream_start_time = None
+        self._stream_duration_limit = 240  # 4 minutes (GCP limit is 5 minutes)
+        self._last_stream_restart = time.time()
+        self._stream_restart_count = 0
+
         # OBSERVABILITY: Thread health monitoring
         self._last_heartbeat = time.time()
         self.heartbeat_interval = 30.0  # seconds
@@ -154,7 +167,7 @@ class ProductionSTTServiceV2:
         self._error_callback = None
         self._status_callback = None
 
-        print(f"✅ ProductionSTTServiceV2 initialized (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
+        print(f"✅ ProductionSTTServiceV2 initialized with STREAMING recognition (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
     def _initialize_speech_client(self, credentials_path: str) -> None:
         """Initialize Google Cloud Speech V2 client with regional endpoint"""
@@ -193,6 +206,9 @@ class ProductionSTTServiceV2:
                 self.recognizer = f"projects/{self.project_id}/locations/us-central1/recognizers/_"
 
                 print("✅ Google Cloud Speech V2 client initialized (us-central1 region)")
+                
+                # Initialize streaming config after client is ready
+                self._initialize_streaming_config()
             else:
                 print("⚠️ No credentials found - running in mock mode")
                 self._has_credentials = False
@@ -202,6 +218,40 @@ class ProductionSTTServiceV2:
             print(f"❌ Failed to initialize Speech client: {e}")
             self._has_credentials = False
             self.speech_client = None
+    
+    def _initialize_streaming_config(self) -> None:
+        """Initialize streaming recognition configuration"""
+        if not self._has_credentials:
+            print("⚠️ No credentials - skipping streaming config initialization")
+            return
+            
+        try:
+            # 🎯 CRITICAL: Proper streaming configuration for real-time transcription
+            self._streaming_config = speech_v2.StreamingRecognitionConfig(
+                config=speech_v2.RecognitionConfig(
+                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
+                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                        sample_rate_hertz=self.sample_rate,
+                        audio_channel_count=1,
+                    ),
+                    language_codes=["en-US"],
+                    model="latest_long",  # 🎯 OPTIMIZED: For continuous conversations
+                    features=speech_v2.RecognitionFeatures(
+                        enable_automatic_punctuation=True,
+                        enable_word_time_offsets=True,
+                        enable_word_confidence=True
+                    )
+                ),
+                interim_results=True,  # 🚨 CRITICAL: Enable real-time interim results
+                single_utterance=False,  # 🚨 CRITICAL: Keep stream open for continuous conversation
+            )
+            
+            print("✅ Streaming recognition configuration initialized")
+            
+        except Exception as e:
+            print(f"❌ Failed to initialize streaming config: {e}")
+            if self._error_callback:
+                self._error_callback("streaming_config_init", e)
     
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
         """Set callback for real-time transcript segments"""
@@ -236,78 +286,223 @@ class ProductionSTTServiceV2:
                     self._error_callback("audio_queue", e)
     
     def _process_audio_chunks(self) -> None:
-        """Process audio chunks with Google Speech V2"""
+        """🚨 NEW: Process audio chunks with STREAMING Google Speech V2 recognition"""
         from datetime import datetime
-        print("🔄 Audio processing thread started")
-        chunk_count = 0
+        print("🔄 STREAMING audio processing thread started")
+        
+        if not self._has_credentials:
+            print("⚠️ No credentials - falling back to mock processing")
+            self._mock_audio_processing()
+            return
+            
+        # Start streaming recognition
+        try:
+            self._start_streaming_recognition()
+        except Exception as e:
+            print(f"❌ Failed to start streaming recognition: {e}")
+            if self._error_callback:
+                self._error_callback("streaming_start", e)
+            return
 
+        print("🏁 STREAMING audio processing thread finished")
+    
+    def _start_streaming_recognition(self) -> None:
+        """🚨 CRITICAL: Start bidirectional streaming recognition"""
+        print("🎤 Starting streaming recognition...")
+        
         while self._is_recording:
             try:
-                # Get audio chunk with timeout
-                chunk_data = self._audio_queue.get(timeout=1.0)
+                with self._stream_lock:
+                    if not self._stream_active:
+                        self._create_streaming_session()
                 
-                # 🔍 CRITICAL DEBUG: Chunk received for processing
-                chunk_receive_debug = {
-                    "chunk_count": chunk_count + 1,
-                    "queue_size_after_get": self._audio_queue.qsize(),
-                    "chunk_data_type": type(chunk_data).__name__,
-                    "is_recording": self._is_recording
-                }
-                print(f"🔍 DEBUG_CHUNK_RECEIVED_FOR_PROCESSING: {chunk_receive_debug}")
-
-                # Double-check recording status before processing
-                if not self._is_recording:
-                    print("🛑 Recording stopped, skipping chunk processing")
-                    break
-
-                # OBSERVABILITY: Handle timestamped chunks and calculate queue time
+                # Check if we need to restart the stream (GCP 5-minute limit)
+                if self._should_restart_stream():
+                    print("🔄 Restarting stream due to time limit")
+                    self._restart_streaming_session()
+                
+                # Process any pending audio chunks
+                self._send_audio_to_stream()
+                
+                # Small sleep to prevent busy waiting
+                time.sleep(0.01)  # 10ms
+                
+            except Exception as e:
+                print(f"❌ Streaming recognition error: {e}")
+                if self._error_callback:
+                    self._error_callback("streaming_recognition", e)
+                
+                # Try to restart the stream
+                with self._stream_lock:
+                    self._stream_active = False
+                time.sleep(1.0)  # Wait before retry
+    
+    def _create_streaming_session(self) -> None:
+        """Create a new streaming recognition session"""
+        try:
+            print("🚀 Creating new streaming session...")
+            
+            # Create streaming client
+            self._streaming_client = self.speech_client.streaming_recognize(
+                requests=self._audio_chunk_generator()
+            )
+            
+            # Start response processing in separate thread
+            response_thread = threading.Thread(
+                target=self._process_streaming_responses,
+                daemon=True
+            )
+            response_thread.start()
+            
+            self._stream_active = True
+            self._stream_start_time = time.time()
+            self._stream_restart_count += 1
+            
+            print(f"✅ Streaming session #{self._stream_restart_count} created successfully")
+            
+        except Exception as e:
+            print(f"❌ Failed to create streaming session: {e}")
+            self._stream_active = False
+            raise
+    
+    def _audio_chunk_generator(self):
+        """🚨 CRITICAL: Generator that yields audio chunks for streaming"""
+        # First, send the streaming config
+        yield speech_v2.StreamingRecognizeRequest(streaming_config=self._streaming_config)
+        
+        # Then continuously yield audio chunks
+        while self._is_recording and self._stream_active:
+            try:
+                # Get audio chunk with timeout
+                chunk_data = self._audio_queue.get(timeout=0.1)
+                
+                # Handle timestamped chunks
                 if isinstance(chunk_data, dict) and "audio_data" in chunk_data:
-                    # New timestamped chunk format
                     audio_chunk = chunk_data["audio_data"]
-                    enqueue_timestamp = chunk_data.get("enqueue_timestamp", 0)
-                    chunk_id = chunk_data.get("chunk_id", chunk_count)
-
-                    # Calculate queue time
-                    dequeue_timestamp = datetime.now().timestamp() * 1000  # milliseconds
-                    queue_time_ms = dequeue_timestamp - enqueue_timestamp if enqueue_timestamp > 0 else 0
-
-                    # STRUCTURED LOGGING: Queue time tracking
-                    queue_timing_context = {
-                        "chunk_id": chunk_id,
-                        "enqueue_timestamp": enqueue_timestamp,
-                        "dequeue_timestamp": dequeue_timestamp,
-                        "queue_time_ms": round(queue_time_ms, 2),
-                        "pipeline_stage": "stt_dequeue"
-                    }
-                    print(f"📊 AUDIO_PIPELINE_QUEUE_TIME: {queue_timing_context}")
+                    chunk_id = chunk_data.get("chunk_id", self._chunk_counter)
+                    
+                    # Log chunk processing
+                    print(f"🔍 STREAMING_CHUNK_SENT: chunk_id={chunk_id}, shape={audio_chunk.shape}")
                 else:
-                    # Legacy chunk format (raw numpy array)
                     audio_chunk = chunk_data
-                    queue_time_ms = 0
-
-                # Process the chunk
-                self._transcribe_chunk(audio_chunk)
-                chunk_count += 1
-
-                # Perform queue health management every 10 chunks
-                if chunk_count % 10 == 0:
-                    self._manage_queue_health()
-
-                # OBSERVABILITY: Thread health heartbeat
-                self._log_thread_heartbeat()
-
+                
+                # Convert to bytes
+                audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
+                audio_bytes = audio_int16.tobytes()
+                
+                # Yield streaming request with audio content
+                yield speech_v2.StreamingRecognizeRequest(audio_content=audio_bytes)
+                
+                self._chunk_counter += 1
+                
             except queue.Empty:
-                # Timeout is normal, just continue checking
-                # Use this opportunity to check queue health and heartbeat
-                self._manage_queue_health()
-                self._log_thread_heartbeat()
+                # No audio available, continue
                 continue
             except Exception as e:
-                print(f"❌ Audio processing error: {e}")
-                if self._error_callback:
-                    self._error_callback("audio_processing", e)
-
-        print("🏁 Audio processing thread finished")
+                print(f"❌ Error in audio chunk generator: {e}")
+                break
+    
+    def _process_streaming_responses(self) -> None:
+        """🚨 CRITICAL: Process streaming responses from Google Speech API"""
+        try:
+            print("🎧 Starting streaming response processing...")
+            
+            for response in self._streaming_client:
+                if not self._is_recording:
+                    break
+                    
+                # Process the streaming response
+                self._handle_streaming_response(response)
+                
+        except Exception as e:
+            print(f"❌ Streaming response processing error: {e}")
+            if self._error_callback:
+                self._error_callback("streaming_response", e)
+        finally:
+            print("🏁 Streaming response processing finished")
+    
+    def _handle_streaming_response(self, response) -> None:
+        """Handle individual streaming response"""
+        try:
+            if not response.results:
+                return
+            
+            for result in response.results:
+                if not result.alternatives:
+                    continue
+                
+                alternative = result.alternatives[0]
+                transcript_text = alternative.transcript.strip()
+                
+                if not transcript_text:
+                    continue
+                
+                # Extract speaker information
+                speaker_id = "Speaker_1"  # Default
+                if hasattr(alternative, 'words') and alternative.words:
+                    first_word = alternative.words[0]
+                    if hasattr(first_word, 'speaker_label') and first_word.speaker_label:
+                        speaker_id = f"Speaker_{first_word.speaker_label}"
+                
+                # Create transcript segment
+                segment = TranscriptSegment(
+                    text=transcript_text,
+                    speaker_id=speaker_id,
+                    confidence=alternative.confidence if hasattr(alternative, 'confidence') else 0.9,
+                    timestamp=datetime.now(),
+                    is_final=result.is_final,  # 🚨 CRITICAL: Use actual is_final from streaming
+                    chunk_id=self._chunk_counter,
+                    language_code="en-US"
+                )
+                
+                # Store segment if final
+                if result.is_final:
+                    self._segments.append(segment)
+                
+                # Call transcript callback for both interim and final results
+                if self._transcript_callback:
+                    self._transcript_callback(segment)
+                
+                # Log the result
+                status = "FINAL" if result.is_final else "INTERIM"
+                print(f"🎤 [{status}] {speaker_id}: {transcript_text} (conf: {segment.confidence:.3f})")
+                
+        except Exception as e:
+            print(f"❌ Error handling streaming response: {e}")
+    
+    def _should_restart_stream(self) -> bool:
+        """Check if streaming session should be restarted"""
+        if not self._stream_start_time:
+            return False
+            
+        # Restart every 4 minutes (GCP limit is 5 minutes)
+        return (time.time() - self._stream_start_time) > self._stream_duration_limit
+    
+    def _restart_streaming_session(self) -> None:
+        """Restart the streaming session"""
+        try:
+            print("🔄 Restarting streaming session...")
+            
+            with self._stream_lock:
+                self._stream_active = False
+                
+            # Small delay to ensure cleanup
+            time.sleep(0.1)
+            
+            # Create new session
+            self._create_streaming_session()
+            
+        except Exception as e:
+            print(f"❌ Failed to restart streaming session: {e}")
+            if self._error_callback:
+                self._error_callback("stream_restart", e)
+    
+    def _send_audio_to_stream(self) -> None:
+        """Send any pending audio chunks to the stream"""
+        # This is handled by the _audio_chunk_generator
+        # Just perform health monitoring here
+        self._manage_queue_health()
+        self._log_thread_heartbeat()
 
     def _mock_audio_processing(self) -> None:
         """Mock audio processing for CI environments without audio hardware"""
@@ -331,175 +526,11 @@ class ProductionSTTServiceV2:
 
         print("🏁 Mock audio processing thread finished")
 
-    def _transcribe_chunk(self, audio_chunk: np.ndarray) -> None:
-        """Transcribe audio chunk using Google Speech V2 with latest_long model for continuous conversations"""
-        try:
-            # Check if recording is still active before processing
-            if not self._is_recording:
-                print("🛑 Recording stopped, skipping transcription")
-                return
-
-            self._chunk_counter += 1
-
-            # 🔍 COMPREHENSIVE AUDIO PIPELINE VALIDATION
-            chunk_debug = {
-                "chunk_id": self._chunk_counter,
-                "timestamp": datetime.now().isoformat(),
-                "audio_shape": audio_chunk.shape,
-                "audio_dtype": str(audio_chunk.dtype),
-                "audio_min": float(np.min(audio_chunk)),
-                "audio_max": float(np.max(audio_chunk)),
-                "audio_mean": float(np.mean(audio_chunk)),
-                "audio_std": float(np.std(audio_chunk)),
-                "has_audio_signal": float(np.std(audio_chunk)) > 0.001,  # Detect if there's actual audio
-                "sample_rate": self.sample_rate,
-                "chunk_duration_ms": len(audio_chunk) / self.sample_rate * 1000,
-                "has_credentials": self._has_credentials
-            }
-            print(f"🔍 DEBUG_AUDIO_CHUNK_RECEIVED: {chunk_debug}")
-
-            if not self._has_credentials:
-                # Mock mode for development
-                print(f"🎭 DEBUG_STT_MOCK_MODE: Generating mock transcript for chunk {self._chunk_counter}")
-                self._generate_mock_transcript()
-                return
-
-            # Convert audio to required format
-            audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
-            audio_bytes = audio_int16.tobytes()
-
-            # 🔍 VALIDATE AUDIO CONVERSION & QUALITY
-            conversion_debug = {
-                "chunk_id": self._chunk_counter,
-                "original_length": len(audio_chunk),
-                "int16_length": len(audio_int16),
-                "bytes_length": len(audio_bytes),
-                "expected_bytes": len(audio_chunk) * 2,  # 16-bit = 2 bytes per sample
-                "conversion_ok": len(audio_bytes) == len(audio_chunk) * 2,
-                "audio_amplitude_ok": float(np.max(np.abs(audio_int16))) > 100,  # Check if audio has reasonable amplitude
-                "zero_padding_ratio": float(np.sum(audio_int16 == 0)) / len(audio_int16),  # Check for silence
-                "sample_rate": self.sample_rate
-            }
-            print(f"🔍 DEBUG_AUDIO_CONVERSION: {conversion_debug}")
-
-            # 🎯 OPTIMIZED: Create Speech V2 request with latest_long model for continuous conversations
-            request = speech_v2.RecognizeRequest(
-                recognizer=self.recognizer,
-                config=speech_v2.RecognitionConfig(
-                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
-                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                        sample_rate_hertz=self.sample_rate,
-                        audio_channel_count=1,
-                    ),
-                    language_codes=["en-US"],
-                    model="latest_long",  # 🎯 CRITICAL FIX: For continuous conversations (not commands)
-                    features=speech_v2.RecognitionFeatures(
-                        enable_automatic_punctuation=True,
-                        enable_word_time_offsets=True,
-                        enable_word_confidence=True
-                    )
-                ),
-                content=audio_bytes
-            )
-
-            # DEEP DEBUG: Log STT API call details
-            stt_request_debug = {
-                "chunk_id": self._chunk_counter,
-                "model": "latest_long",
-                "recognizer": self.recognizer,
-                "audio_bytes_length": len(audio_bytes),
-                "sample_rate": self.sample_rate,
-                "encoding": "LINEAR16"
-            }
-            print(f"🔍 DEBUG_STT_API_REQUEST: {stt_request_debug}")
-
-            # Call Speech V2 API
-            print(f"🔍 DEBUG_STT_API_CALLING: Making Speech V2 API call for chunk {self._chunk_counter}")
-            response = self.speech_client.recognize(request=request)
-            print(f"🔍 DEBUG_STT_API_RESPONSE: Received response for chunk {self._chunk_counter}, type={type(response)}")
-
-            # DEEP DEBUG: Log response details
-            response_debug = {
-                "chunk_id": self._chunk_counter,
-                "has_results": hasattr(response, 'results') and len(response.results) > 0,
-                "results_count": len(response.results) if hasattr(response, 'results') else 0
-            }
-            
-            if hasattr(response, 'results') and response.results:
-                result = response.results[0]
-                response_debug.update({
-                    "has_alternatives": hasattr(result, 'alternatives') and len(result.alternatives) > 0,
-                    "alternatives_count": len(result.alternatives) if hasattr(result, 'alternatives') else 0
-                })
-                
-                if hasattr(result, 'alternatives') and result.alternatives:
-                    alt = result.alternatives[0]
-                    response_debug.update({
-                        "transcript_text": getattr(alt, 'transcript', ''),
-                        "confidence": getattr(alt, 'confidence', 0.0)
-                    })
-            
-            print(f"🔍 DEBUG_STT_API_RESPONSE_DETAILS: {response_debug}")
-
-            # Process response
-            self._process_speech_response(response)
-
-        except Exception as e:
-            print(f"❌ Transcription error for chunk {self._chunk_counter}: {e}")
-            print(f"🔍 DEBUG_STT_ERROR_DETAILS: chunk={self._chunk_counter}, error_type={type(e)}, error_str={str(e)}")
-            if self._error_callback:
-                self._error_callback("transcription", e)
-    
-    def _process_speech_response(self, response) -> None:
-        """Process Google Speech V2 response"""
-        try:
-            if not response.results:
-                return
-            
-            for result in response.results:
-                if not result.alternatives:
-                    continue
-                
-                alternative = result.alternatives[0]
-                transcript_text = alternative.transcript.strip()
-                
-                if not transcript_text:
-                    continue
-                
-                # Extract speaker information
-                speaker_id = "Speaker_1"  # Default
-                if hasattr(alternative, 'words') and alternative.words:
-                    # Get speaker tag from first word
-                    first_word = alternative.words[0]
-                    if hasattr(first_word, 'speaker_label') and first_word.speaker_label:
-                        speaker_id = f"Speaker_{first_word.speaker_label}"
-                
-                # Create transcript segment
-                segment = TranscriptSegment(
-                    text=transcript_text,
-                    speaker_id=speaker_id,
-                    confidence=alternative.confidence if hasattr(alternative, 'confidence') else 0.9,
-                    timestamp=datetime.now(),
-                    is_final=True,  # V2 sync always returns final results
-                    chunk_id=self._chunk_counter,
-                    language_code="en-US"
-                )
-                
-                # Store segment
-                self._segments.append(segment)
-                
-                # Call transcript callback
-                if self._transcript_callback:
-                    self._transcript_callback(segment)
-                
-                print(f"🎭 {speaker_id}: {transcript_text} (conf: {segment.confidence:.3f})")
-                
-        except Exception as e:
-            print(f"❌ Response processing error: {e}")
-            # TEMPORARILY DISABLED: Error callback to fix async issues
-            # if self._error_callback:
-            #     self._error_callback("response_processing", e)
-            print(f"⚠️ Error logged: response_processing - {e}")
+    # 🚨 REMOVED: _transcribe_chunk and _process_speech_response methods
+    # These have been replaced with proper streaming recognition:
+    # - _handle_streaming_response() now processes streaming responses
+    # - _audio_chunk_generator() sends audio chunks to streaming API
+    # - No more synchronous per-chunk API calls
     
     def _generate_mock_transcript(self) -> None:
         """Generate mock transcript for development"""
@@ -648,6 +679,15 @@ class ProductionSTTServiceV2:
             # STEP 2: Set recording flag to False to stop processing thread
             self._is_recording = False
             print("🛑 Recording flag set to False")
+
+            # STEP 2.5: 🚨 NEW: Clean up streaming session
+            with self._stream_lock:
+                if self._stream_active:
+                    print("🔄 Stopping streaming session...")
+                    self._stream_active = False
+                    
+                    # Give the stream a moment to clean up
+                    time.sleep(0.1)
 
             # STEP 3: Wait for processing thread to finish
             if self._processing_thread and self._processing_thread.is_alive():
