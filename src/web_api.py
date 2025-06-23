@@ -313,11 +313,22 @@ async def receive_audio_chunk(connection_id: str, request: Request):
     conversation_system = active_conversations[connection_id]
     
     # --- Queue back-pressure check --------------------------------------------------
+    request_start = time.time()
+
     try:
         stt_agent = conversation_system.get_agent("stt")
         stt_service = stt_agent.stt_service if stt_agent and hasattr(stt_agent, "stt_service") else None
         if stt_service and hasattr(stt_service, "_audio_queue"):
             if stt_service._audio_queue.qsize() >= int(getattr(stt_service, "max_queue_size", 100) * QUEUE_BACKPRESSURE_THRESHOLD):
+                logger.warning(
+                    json.dumps({
+                        "event": "audio_rejected_429",
+                        "queue_size": stt_service._audio_queue.qsize(),
+                        "max_queue": stt_service.max_queue_size,
+                        "connection_id": connection_id,
+                        "timestamp": request_start
+                    })
+                )
                 raise HTTPException(status_code=429, detail="Server busy – please retry (audio queue full)")
     except Exception:
         # If anything goes wrong here we'd rather continue than crash
@@ -356,6 +367,20 @@ async def receive_audio_chunk(connection_id: str, request: Request):
     else:
         final_mime_type = f"audio/{mime_type}"
 
+    # Log incoming request size and queue metrics before heavy work
+    try:
+        qsize_pre = stt_service._audio_queue.qsize() if stt_service else -1
+    except Exception:
+        qsize_pre = -1
+
+    logger.debug(json.dumps({
+        "event": "audio_chunk_received",
+        "connection_id": connection_id,
+        "bytes": len(audio_bytes) if audio_bytes else 0,
+        "queue_size_pre": qsize_pre,
+        "timestamp": request_start
+    }))
+
     # Process the audio chunk
     result = await process_frontend_audio_chunk(
         connection_id,
@@ -363,6 +388,22 @@ async def receive_audio_chunk(connection_id: str, request: Request):
         final_mime_type,
         conversation_system,
     )
+
+    # Log completion
+    latency_ms = (time.time() - request_start) * 1000.0
+    try:
+        qsize_post = stt_service._audio_queue.qsize() if stt_service else -1
+    except Exception:
+        qsize_post = -1
+
+    logger.debug(json.dumps({
+        "event": "audio_chunk_processed",
+        "connection_id": connection_id,
+        "latency_ms": round(latency_ms, 2),
+        "queue_size_post": qsize_post,
+        "result_status": result.get("success", True) if isinstance(result, dict) else True,
+        "timestamp": time.time()
+    }))
 
     return {"status": "processed", "result": result}
 

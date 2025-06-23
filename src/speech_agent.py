@@ -127,8 +127,12 @@ class ProductionSTTServiceV2:
         self.dtype = np.float32
 
         self.project_id = project_id
-        self.max_queue_size = 10
-        self.queue_warning_threshold = 8  # Warn when queue is 80% full
+        # 🚀 OBSERVABILITY UPGRADE 2025-06-23
+        # Increase buffer so brief CPU spikes don't drop audio and make the
+        # queue state visible in every log entry
+        self.max_queue_size = 50  # 5 s of 100 ms PCM chunks
+        self.queue_warning_threshold = int(self.max_queue_size * 0.8)  # 80 % full
+
         self.queue_cleanup_interval = 30  # Clean up old chunks every 30 seconds
 
         # 🔧 CRITICAL FIX: Initialize callbacks BEFORE speech client to prevent attribute errors
@@ -145,7 +149,6 @@ class ProductionSTTServiceV2:
         self._segments = []
         self._last_queue_cleanup = time.time()
         self.queue_cleanup_interval = 30.0  # seconds
-        self.queue_warning_threshold = int(self.max_queue_size * 0.8)  # 80% full warning
 
         self._recording_thread = None
         self._processing_thread = None
@@ -167,6 +170,9 @@ class ProductionSTTServiceV2:
         self._last_heartbeat = time.time()
         self.heartbeat_interval = 30.0  # seconds
         self._thread_health_alerts = []
+
+        # Track timing between consecutive chunks for latency diagnostics
+        self._prev_chunk_ts: Optional[float] = None
 
         print(f"✅ ProductionSTTServiceV2 initialized with STREAMING recognition (chunk_duration={chunk_duration}s, model=latest_long, buffer_size={self.max_queue_size})")
     
@@ -519,9 +525,28 @@ class ProductionSTTServiceV2:
                 
                 audio_bytes = audio_int16.tobytes()
                 
-                # Log audio quality for debugging
-                print(f"🔍 AUDIO_BYTES_SENT: length={len(audio_bytes)}, samples={len(audio_int16)}, "
-                      f"range=[{audio_int16.min()}, {audio_int16.max()}]")
+                # ────────────────────────────────────────────────
+                #   DIAGNOSTIC LOG – one line per original chunk
+                # ────────────────────────────────────────────────
+                now_ts = time.time()
+                delta_ms = 0.0
+                if self._prev_chunk_ts is not None:
+                    delta_ms = (now_ts - self._prev_chunk_ts) * 1000.0
+                self._prev_chunk_ts = now_ts
+
+                try:
+                    queue_sz = self._audio_queue.qsize()
+                except Exception:
+                    queue_sz = -1
+
+                print(
+                    "📤 STREAM_SEND: chunk_id=%s bytes=%d queue=%d Δt=%.1fms" % (
+                        self._chunk_counter,
+                        len(audio_bytes),
+                        queue_sz,
+                        delta_ms,
+                    )
+                )
                 
                 # 🚨 CRITICAL FIX: Split payload into ≤25 600-byte slices per API limits
                 max_bytes = 25600  # Speech-to-Text V2 limit per StreamingRecognizeRequest
@@ -621,7 +646,13 @@ class ProductionSTTServiceV2:
                 
                 # Log the result
                 status = "FINAL" if result.is_final else "INTERIM"
-                print(f"🎤 [{status}] {speaker_id}: {transcript_text} (conf: {segment.confidence:.3f})")
+                try:
+                    q_sz = self._audio_queue.qsize()
+                except Exception:
+                    q_sz = -1
+                print(
+                    f"🎤 [{status}] {speaker_id}: {transcript_text} (conf: {segment.confidence:.3f}) | queue={q_sz}"
+                )
                 
         except Exception as e:
             print(f"❌ Error handling streaming response: {e}")
