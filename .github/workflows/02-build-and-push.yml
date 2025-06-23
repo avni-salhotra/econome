@@ -51,6 +51,12 @@ jobs:
     - name: "☁️ Set up Google Cloud CLI"
       uses: google-github-actions/setup-gcloud@v2
 
+    - name: "🔑 Configure Docker auth for Artifact Registry"
+      run: |
+        echo "🔑 Configuring Docker to authenticate with gcr.io..."
+        gcloud auth configure-docker gcr.io --quiet
+        echo "✅ Docker authentication configured"
+
     - name: "🏷️ Generate image tags"
       id: tags
       run: |
