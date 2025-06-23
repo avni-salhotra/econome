@@ -29,7 +29,7 @@ if __name__ == "__main__":
     print("🚀 Starting Econome Web API...")
     print(f"📡 Server will run on {host}:{port}")
     print(f"🌐 API docs available at http://localhost:{port}/docs")
-    print(f"🔗 WebSocket endpoint: ws://localhost:{port}/ws/conversation")
+    print(f"🏗️ Architecture: HTTP-only (WebSocket removed)")
     print(f"🔧 Environment: {environment}")
 
     uvicorn.run(

@@ -1048,7 +1048,7 @@ class ConversationIntelligenceSystem:
                 "agents_available": list(self.agents.keys()),
                 "agents_count": len(self.agents),
                 "stt_service_state": stt_state,
-                "websocket_manager_state": websocket_state,
+                "websocket_manager_state": "removed_http_only_api",
                 "system_kwargs": self.kwargs,
                 "state_dump_timestamp": current_time * 1000  # milliseconds
             }
