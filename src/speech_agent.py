@@ -413,8 +413,30 @@ class ProductionSTTServiceV2:
                     audio_chunk = chunk_data
                 
                 # Convert to bytes
-                audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
+                # 🚨 CRITICAL FIX: Audio values are already in proper range from FFmpeg
+                # Don't multiply by 32767 - FFmpeg already outputs int16-range values as float32
+                # Just convert from float32 to int16 without scaling
+                if audio_chunk.dtype == np.float32:
+                    # Check if values are normalized (-1 to 1) or already scaled
+                    max_val = np.abs(audio_chunk).max()
+                    if max_val <= 1.0:
+                        # Values are normalized, scale them
+                        audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
+                        print(f"🔍 AUDIO_SCALING: normalized->int16 (max_val: {max_val:.3f})")
+                    else:
+                        # Values are already scaled, just convert type
+                        audio_int16 = audio_chunk.flatten().astype(np.int16)
+                        print(f"🔍 AUDIO_SCALING: already_scaled->int16 (max_val: {max_val:.0f})")
+                else:
+                    # Already int16 or other integer type
+                    audio_int16 = audio_chunk.flatten().astype(np.int16)
+                    print(f"🔍 AUDIO_SCALING: direct conversion from {audio_chunk.dtype}")
+                
                 audio_bytes = audio_int16.tobytes()
+                
+                # Log audio quality for debugging
+                print(f"🔍 AUDIO_BYTES_SENT: length={len(audio_bytes)}, samples={len(audio_int16)}, "
+                      f"range=[{audio_int16.min()}, {audio_int16.max()}]")
                 
                 # 🚨 CRITICAL FIX: Use 'audio' not 'audio_content' for Speech V2
                 yield speech_v2.StreamingRecognizeRequest(audio=audio_bytes)
