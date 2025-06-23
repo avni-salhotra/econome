@@ -397,8 +397,8 @@ async def stop_conversation(connection_id: str):
 
         # Save results to ephemeral storage
         token = await session_manager.create_session(
-            summary=final_results.get("summary", "No summary available."),
-            action_items=final_results.get("action_items", []),
+            summary=final_results.get("final_summary", "No summary available."),
+            action_items=final_results.get("final_action_items", []),
             session_metadata={"connection_id": connection_id}
         )
         
@@ -408,8 +408,8 @@ async def stop_conversation(connection_id: str):
         response_data = {
             "message": "Conversation stopped and analyzed.",
             "ephemeral_url": ephemeral_url,
-            "final_summary": final_results.get("summary"),
-            "final_action_items": final_results.get("action_items"),
+            "final_summary": final_results.get("final_summary"),
+            "final_action_items": final_results.get("final_action_items"),
             "stt_statistics": final_results.get("stt_statistics")
         }
 

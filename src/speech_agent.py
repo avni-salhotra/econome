@@ -167,7 +167,6 @@ class ProductionSTTServiceV2:
         
         # Stream health monitoring
         self._stream_start_time = None
-        self._stream_duration_limit = 240  # 4 minutes (GCP limit is 5 minutes)
         self._last_stream_restart = time.time()
         self._stream_restart_count = 0
 
@@ -279,8 +278,8 @@ class ProductionSTTServiceV2:
                     interim_results=True,
                     enable_voice_activity_events=True,
                     voice_activity_timeout=speech_v2.StreamingRecognitionFeatures.VoiceActivityTimeout(
-                        speech_start_timeout=duration_pb2.Duration(seconds=5),
-                        speech_end_timeout=duration_pb2.Duration(seconds=2)
+                        speech_start_timeout=duration_pb2.Duration(seconds=10),  # ✅ INCREASED: More tolerance for startup
+                        speech_end_timeout=duration_pb2.Duration(seconds=8)      # ✅ INCREASED: Allow longer pauses
                     )
                 )
             )
@@ -441,7 +440,7 @@ class ProductionSTTServiceV2:
             
             finally:
                 if not self._stop_event.is_set():
-                    print("🔄 Stream ended. Will restart if recording is still active.")
+                    print("🔄 Stream restarting automatically (Google Cloud Speech internal cycling)...")
         
         print("🛑 Master thread exiting.")
 
@@ -451,13 +450,8 @@ class ProductionSTTServiceV2:
         that runs until the stream is stopped or times out.
         """
         stream_start_time = time.time()
-        stream_duration_limit = self._stream_duration_limit
 
         while not self._stop_event.is_set():
-            if time.time() - stream_start_time > stream_duration_limit:
-                print("⏰ Stream time limit reached. Ending current stream.")
-                break
-            
             try:
                 chunk = self._audio_queue.get(timeout=0.1)
                 yield speech_v2.StreamingRecognizeRequest(audio=chunk)

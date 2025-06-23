@@ -115,43 +115,98 @@
             </div>
         </div>
 
-        <!-- Processing Status -->
-        <div id="processingStatus" class="bg-blue-50 border border-blue-200 rounded-lg p-4 mb-6 hidden">
-            <div class="flex items-center">
-                <div class="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600 mr-3"></div>
-                <span class="text-blue-800 font-medium">Processing your conversation...</span>
+        <!-- AI Agent Processing Status -->
+        <div id="aiProcessingStatus" class="bg-gradient-to-r from-purple-50 to-blue-50 border border-purple-200 rounded-lg p-6 mb-6 hidden">
+            <div class="mb-4">
+                <h3 class="text-lg font-semibold text-purple-800 mb-2 flex items-center">
+                    <span class="mr-2">🧠</span>
+                    AI Agent Analysis in Progress
+                </h3>
+                <p class="text-purple-600 text-sm">
+                    Two Gemini AI agents are working in parallel to analyze your conversation
+                </p>
             </div>
-            <div class="mt-2 text-sm text-blue-700">
-                Running parallel Gemini analysis for summary and action items
+
+            <!-- Parallel Agent Status Grid -->
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <!-- Summary Agent -->
+                <div id="summaryAgentCard" class="bg-white rounded-lg p-4 border border-purple-100">
+                    <div class="flex items-center mb-3">
+                        <div id="summaryAgentSpinner" class="animate-spin rounded-full h-5 w-5 border-b-2 border-purple-600 mr-3"></div>
+                        <div>
+                            <h4 class="font-semibold text-purple-800">📋 Summary Agent</h4>
+                            <p class="text-xs text-purple-600">Analyzing conversation structure</p>
+                        </div>
+                    </div>
+                    <div id="summaryAgentStatus" class="text-sm">
+                        <div class="text-purple-700">🔍 Reading transcript...</div>
+                        <div class="mt-1 bg-purple-100 rounded-full h-2">
+                            <div id="summaryProgress" class="bg-purple-600 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Action Items Agent -->
+                <div id="actionItemsAgentCard" class="bg-white rounded-lg p-4 border border-blue-100">
+                    <div class="flex items-center mb-3">
+                        <div id="actionItemsAgentSpinner" class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600 mr-3"></div>
+                        <div>
+                            <h4 class="font-semibold text-blue-800">✅ Action Items Agent</h4>
+                            <p class="text-xs text-blue-600">Extracting tasks and deadlines</p>
+                        </div>
+                    </div>
+                    <div id="actionItemsAgentStatus" class="text-sm">
+                        <div class="text-blue-700">🔍 Scanning for tasks...</div>
+                        <div class="mt-1 bg-blue-100 rounded-full h-2">
+                            <div id="actionItemsProgress" class="bg-blue-600 h-2 rounded-full transition-all duration-500" style="width: 0%"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Overall Progress -->
+            <div class="mt-4 pt-4 border-t border-purple-200">
+                <div class="flex items-center justify-between text-sm">
+                    <span class="text-purple-700 font-medium">Overall Progress</span>
+                    <span id="overallProgressText" class="text-purple-600">0% Complete</span>
+                </div>
+                <div class="mt-2 bg-purple-100 rounded-full h-3">
+                    <div id="overallProgress" class="bg-gradient-to-r from-purple-600 to-blue-600 h-3 rounded-full transition-all duration-700" style="width: 0%"></div>
+                </div>
             </div>
         </div>
 
         <!-- Results Display -->
         <div id="resultsContainer" class="hidden">
-            <!-- Summary Section -->
-            <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
-                <h2 class="text-xl font-semibold mb-4 flex items-center">
-                    <span class="mr-2">🧠</span>
-                    Organized Summary
-                </h2>
-                <div id="summaryContent" class="bg-blue-50 p-4 rounded-lg">
-                    <!-- Summary will be inserted here -->
+            <!-- Two-Column Layout for Summary and Action Items -->
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+                <!-- Summary Section (Left Column) -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <span class="mr-2">🧠</span>
+                        Organized Thoughts
+                    </h2>
+                    <p class="text-sm text-gray-600 mb-3">Your rambling thoughts, cleaned up and organized</p>
+                    <div id="summaryContent" class="bg-blue-50 p-4 rounded-lg min-h-[200px]">
+                        <!-- Summary will be inserted here -->
+                    </div>
+                </div>
+
+                <!-- Action Items Section (Right Column) -->
+                <div class="bg-white rounded-lg shadow-lg p-6">
+                    <h2 class="text-xl font-semibold mb-4 flex items-center">
+                        <span class="mr-2">📋</span>
+                        Action Items
+                        <span id="actionItemCount" class="ml-2 bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded-full"></span>
+                    </h2>
+                    <p class="text-sm text-gray-600 mb-3">Tasks and communications you mentioned</p>
+                    <div id="actionItemsContent" class="min-h-[200px]">
+                        <!-- Action items will be inserted here -->
+                    </div>
                 </div>
             </div>
 
-            <!-- Action Items Section -->
-            <div class="bg-white rounded-lg shadow-lg p-6 mb-6">
-                <h2 class="text-xl font-semibold mb-4 flex items-center">
-                    <span class="mr-2">📋</span>
-                    Action Items
-                    <span id="actionItemCount" class="ml-2 bg-blue-100 text-blue-800 text-sm px-2 py-1 rounded-full"></span>
-                </h2>
-                <div id="actionItemsContent">
-                    <!-- Action items will be inserted here -->
-                </div>
-            </div>
-
-            <!-- Ephemeral URL Section -->
+            <!-- Ephemeral URL Section (Full Width Below) -->
             <div class="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
                 <h3 class="text-lg font-semibold text-green-800 mb-3 flex items-center">
                     <span class="mr-2">🔗</span>
@@ -258,9 +313,18 @@
                 this.statusIndicator = document.getElementById('statusIndicator');
                 this.statusText = document.getElementById('statusText');
                 this.liveTranscriptEl = document.getElementById('liveTranscript');
-                this.processingStatus = document.getElementById('processingStatus');
+                this.aiProcessingStatus = document.getElementById('aiProcessingStatus');
                 this.resultsContainer = document.getElementById('resultsContainer');
                 this.connectionStatus = document.getElementById('connectionStatus');
+
+                // AI Agent Processing State
+                this.aiProcessingState = {
+                    summaryAgent: { status: 'waiting', progress: 0, completed: false },
+                    actionItemsAgent: { status: 'waiting', progress: 0, completed: false },
+                    startTime: null,
+                    maxDurationMs: 15000, // Estimated max processing time for UX
+                    progressInterval: null
+                };
             }
 
             detectBrowser() {
@@ -651,6 +715,9 @@ Would you like to try Demo Mode instead?`;
                 // Wait a moment for the final audio chunk to be sent
                 await new Promise(resolve => setTimeout(resolve, 500));
 
+                // Start AI Agent Processing Visualization
+                this.startAIProcessingVisualization();
+
                 // Stop the conversation on the backend
                 if (this.connectionId) {
                     try {
@@ -658,11 +725,25 @@ Would you like to try Demo Mode instead?`;
                             method: 'POST'
                         });
                         const data = await response.json();
-                        // This now receives the full analysis payload
-                        this.handleConversationComplete(data);
+                        
+                        console.log('🎉 Received analysis results:', data);
+                        
+                        // Complete the AI processing visualization
+                        this.completeAIProcessing();
+                        
+                        // FIXED: Use the correct data structure from HTTP API
+                        const results = {
+                            summary: data.final_summary,
+                            action_items: data.final_action_items || []
+                        };
+                        
+                        // Display results with ephemeral URL
+                        this.displayResults(results, data.ephemeral_url);
+                        
                     } catch (error) {
                         console.error('Error stopping conversation:', error);
-                        this.handleError({ message: 'Failed to stop session.' });
+                        this.stopAIProcessingVisualization();
+                        this.showError('Failed to stop session: ' + error.message);
                     }
                 }
 
@@ -698,9 +779,9 @@ Would you like to try Demo Mode instead?`;
                     this.liveTranscriptEl.innerHTML = `<div class="text-gray-800">${fullText}</div>`;
                 }
 
-                // Show processing
-                this.processingStatus.classList.remove('hidden');
-                await new Promise(resolve => setTimeout(resolve, 2000));
+                // Show AI processing
+                this.startAIProcessingVisualization();
+                await new Promise(resolve => setTimeout(resolve, 3000));
 
                 try {
                     // Call demo API
@@ -708,7 +789,7 @@ Would you like to try Demo Mode instead?`;
                     const data = await response.json();
 
                     this.updateStatus('complete', 'Demo analysis complete');
-                    this.processingStatus.classList.add('hidden');
+                    this.completeAIProcessing();
                     this.displayResults(data.results, data.ephemeral_url);
 
                 } catch (error) {
@@ -718,6 +799,188 @@ Would you like to try Demo Mode instead?`;
 
                 this.resetControls();
                 this.demoBtn.disabled = false;
+            }
+
+            /**
+             * 🧠 AI AGENT PROCESSING VISUALIZATION METHODS
+             * Staff-level engineering approach to parallel agent visualization
+             */
+
+            startAIProcessingVisualization() {
+                console.log('🧠 Starting AI Agent Processing Visualization');
+                
+                // Reset state
+                this.aiProcessingState = {
+                    summaryAgent: { status: 'processing', progress: 0, completed: false },
+                    actionItemsAgent: { status: 'processing', progress: 0, completed: false },
+                    startTime: Date.now(),
+                    maxDurationMs: 15000,
+                    progressInterval: null
+                };
+
+                // Show AI processing status panel
+                this.aiProcessingStatus.classList.remove('hidden');
+                this.updateStatus('processing', 'AI agents analyzing conversation...');
+
+                // Start simulated progress for both agents
+                this.simulateAgentProgress();
+
+                // Scroll to processing status for visibility
+                this.aiProcessingStatus.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+
+            simulateAgentProgress() {
+                // Create realistic progress simulation for both agents
+                const summaryProgressSteps = [
+                    { progress: 10, text: '🔍 Reading transcript...', delay: 300 },
+                    { progress: 25, text: '📊 Analyzing conversation structure...', delay: 800 },
+                    { progress: 45, text: '🧠 Identifying key themes...', delay: 1200 },
+                    { progress: 65, text: '📝 Generating summary...', delay: 1800 },
+                    { progress: 85, text: '✨ Refining content...', delay: 2200 },
+                    { progress: 95, text: '✅ Summary complete!', delay: 2500 }
+                ];
+
+                const actionItemsProgressSteps = [
+                    { progress: 15, text: '🔍 Scanning for tasks...', delay: 400 },
+                    { progress: 30, text: '📋 Extracting action items...', delay: 900 },
+                    { progress: 50, text: '👤 Identifying responsible parties...', delay: 1300 },
+                    { progress: 70, text: '📅 Detecting deadlines...', delay: 1700 },
+                    { progress: 85, text: '🏷️ Categorizing items...', delay: 2100 },
+                    { progress: 95, text: '✅ Action items complete!', delay: 2400 }
+                ];
+
+                // Simulate Summary Agent Progress
+                summaryProgressSteps.forEach((step, index) => {
+                    setTimeout(() => {
+                        if (!this.aiProcessingState.summaryAgent.completed) {
+                            this.updateAgentProgress('summary', step.progress, step.text);
+                        }
+                    }, step.delay);
+                });
+
+                // Simulate Action Items Agent Progress
+                actionItemsProgressSteps.forEach((step, index) => {
+                    setTimeout(() => {
+                        if (!this.aiProcessingState.actionItemsAgent.completed) {
+                            this.updateAgentProgress('actionItems', step.progress, step.text);
+                        }
+                    }, step.delay);
+                });
+
+                // Update overall progress
+                this.aiProcessingState.progressInterval = setInterval(() => {
+                    this.updateOverallProgress();
+                }, 100);
+            }
+
+            updateAgentProgress(agentType, progress, statusText) {
+                const isCompleted = progress >= 95;
+                
+                if (agentType === 'summary') {
+                    this.aiProcessingState.summaryAgent.progress = progress;
+                    this.aiProcessingState.summaryAgent.completed = isCompleted;
+                    
+                    // Update UI elements
+                    document.getElementById('summaryProgress').style.width = `${progress}%`;
+                    document.getElementById('summaryAgentStatus').innerHTML = `
+                        <div class="text-purple-700">${statusText}</div>
+                        <div class="mt-1 bg-purple-100 rounded-full h-2">
+                            <div id="summaryProgress" class="bg-purple-600 h-2 rounded-full transition-all duration-500" style="width: ${progress}%"></div>
+                        </div>
+                    `;
+
+                    if (isCompleted) {
+                        document.getElementById('summaryAgentSpinner').classList.remove('animate-spin');
+                        document.getElementById('summaryAgentSpinner').innerHTML = '✅';
+                        document.getElementById('summaryAgentCard').classList.add('bg-purple-50');
+                    }
+                } else if (agentType === 'actionItems') {
+                    this.aiProcessingState.actionItemsAgent.progress = progress;
+                    this.aiProcessingState.actionItemsAgent.completed = isCompleted;
+                    
+                    // Update UI elements
+                    document.getElementById('actionItemsProgress').style.width = `${progress}%`;
+                    document.getElementById('actionItemsAgentStatus').innerHTML = `
+                        <div class="text-blue-700">${statusText}</div>
+                        <div class="mt-1 bg-blue-100 rounded-full h-2">
+                            <div id="actionItemsProgress" class="bg-blue-600 h-2 rounded-full transition-all duration-500" style="width: ${progress}%"></div>
+                        </div>
+                    `;
+
+                    if (isCompleted) {
+                        document.getElementById('actionItemsAgentSpinner').classList.remove('animate-spin');
+                        document.getElementById('actionItemsAgentSpinner').innerHTML = '✅';
+                        document.getElementById('actionItemsAgentCard').classList.add('bg-blue-50');
+                    }
+                }
+            }
+
+            updateOverallProgress() {
+                const summaryProgress = this.aiProcessingState.summaryAgent.progress;
+                const actionItemsProgress = this.aiProcessingState.actionItemsAgent.progress;
+                const overall = Math.floor((summaryProgress + actionItemsProgress) / 2);
+                
+                document.getElementById('overallProgress').style.width = `${overall}%`;
+                document.getElementById('overallProgressText').textContent = `${overall}% Complete`;
+
+                // Stop interval when both agents are complete
+                if (this.aiProcessingState.summaryAgent.completed && 
+                    this.aiProcessingState.actionItemsAgent.completed) {
+                    if (this.aiProcessingState.progressInterval) {
+                        clearInterval(this.aiProcessingState.progressInterval);
+                        this.aiProcessingState.progressInterval = null;
+                    }
+                }
+            }
+
+            completeAIProcessing() {
+                console.log('✅ AI Agent Processing Complete');
+                
+                // Ensure both agents show complete
+                this.updateAgentProgress('summary', 100, '✅ Summary generated successfully!');
+                this.updateAgentProgress('actionItems', 100, '✅ Action items extracted successfully!');
+                
+                // Update overall status
+                setTimeout(() => {
+                    document.getElementById('overallProgress').style.width = '100%';
+                    document.getElementById('overallProgressText').textContent = 'Analysis Complete!';
+                    
+                    // Add completion styling
+                    this.aiProcessingStatus.classList.add('border-green-200', 'bg-gradient-to-r', 'from-green-50', 'to-blue-50');
+                    
+                    // Fade out after showing completion
+                    setTimeout(() => {
+                        this.aiProcessingStatus.classList.add('hidden');
+                    }, 2000);
+                }, 500);
+
+                // Clear any remaining interval
+                if (this.aiProcessingState.progressInterval) {
+                    clearInterval(this.aiProcessingState.progressInterval);
+                    this.aiProcessingState.progressInterval = null;
+                }
+            }
+
+            stopAIProcessingVisualization() {
+                console.log('❌ Stopping AI Agent Processing Visualization');
+                
+                // Clear interval
+                if (this.aiProcessingState.progressInterval) {
+                    clearInterval(this.aiProcessingState.progressInterval);
+                    this.aiProcessingState.progressInterval = null;
+                }
+                
+                // Hide processing status
+                this.aiProcessingStatus.classList.add('hidden');
+                
+                // Reset state
+                this.aiProcessingState = {
+                    summaryAgent: { status: 'waiting', progress: 0, completed: false },
+                    actionItemsAgent: { status: 'waiting', progress: 0, completed: false },
+                    startTime: null,
+                    maxDurationMs: 15000,
+                    progressInterval: null
+                };
             }
 
             resetControls() {
@@ -738,8 +1001,8 @@ Would you like to try Demo Mode instead?`;
                 this.liveTranscript = '';
                 this.liveTranscriptEl.innerHTML = '<div class="text-gray-500 italic">Click "Start Recording" to begin live transcription...</div>';
 
-                // Hide processing banner if still visible
-                this.processingStatus.classList.add('hidden');
+                // Hide AI processing status if still visible
+                this.stopAIProcessingVisualization();
 
                 // (Optional) keep resultsContainer visible so user can still copy
             }
@@ -755,6 +1018,25 @@ Would you like to try Demo Mode instead?`;
 
                 // Display ephemeral URL
                 document.getElementById('ephemeralUrl').textContent = ephemeralUrl;
+
+                // Setup copy button functionality
+                const copyBtn = document.getElementById('copyUrlBtn');
+                copyBtn.onclick = () => {
+                    navigator.clipboard.writeText(ephemeralUrl).then(() => {
+                        copyBtn.textContent = 'Copied!';
+                        copyBtn.classList.add('bg-green-700');
+                        setTimeout(() => {
+                            copyBtn.textContent = 'Copy';
+                            copyBtn.classList.remove('bg-green-700');
+                        }, 2000);
+                    }).catch(err => {
+                        console.error('Failed to copy URL:', err);
+                        copyBtn.textContent = 'Failed';
+                        setTimeout(() => {
+                            copyBtn.textContent = 'Copy';
+                        }, 2000);
+                    });
+                };
 
                 // Show results container
                 this.resultsContainer.classList.remove('hidden');
@@ -911,6 +1193,9 @@ Would you like to try Demo Mode instead?`;
                     case 'insight':
                         this.handleInsightUpdate(data);
                         break;
+                    case 'agent_progress':
+                        this.handleAgentProgressUpdate(data);
+                        break;
                     case 'error':
                         this.handleError(data);
                         break;
@@ -994,11 +1279,33 @@ Would you like to try Demo Mode instead?`;
             }
 
             /**
+             * 🧠 Handle real-time agent progress updates from backend
+             * Integrates backend parallel agent execution with frontend visualization
+             */
+            handleAgentProgressUpdate(event) {
+                console.log('🔄 Agent progress update:', event);
+                
+                // Map backend agent names to frontend agent types
+                const agentType = event.agent === 'summary' ? 'summary' : 'actionItems';
+                
+                // Ensure AI processing visualization is shown
+                if (this.aiProcessingStatus.classList.contains('hidden')) {
+                    this.aiProcessingStatus.classList.remove('hidden');
+                }
+                
+                // Update the specific agent progress in real-time
+                this.updateAgentProgress(agentType, event.progress, event.message);
+                
+                console.log(`✅ Updated ${agentType} agent: ${event.progress}% - ${event.message}`);
+            }
+
+            /**
              * Handle conversation complete – final summary & action items ready.
              */
             handleConversationComplete(event) {
+                console.log('🎉 Conversation complete - received parallel Gemini agent results:', event);
+                
                 this.updateStatus('complete', 'Analysis complete');
-                this.processingStatus.classList.add('hidden');
                 
                 // Use the new keys from the parallel analysis response
                 const results = {

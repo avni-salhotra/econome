@@ -115,16 +115,105 @@ class ConversationIntelligenceSystem:
             return None
 
     async def stop_conversation(self) -> Dict[str, Any]:
-        """Stop conversation and get summary"""
+        """Stop conversation and run parallel Gemini agent analysis"""
         print("🛑 Stopping conversation...")
         
         full_transcript_text = " ".join([seg['text'] for seg in self.orchestration_agent.full_transcript])
         
-        # Run analysis in parallel
-        summary_task = summarize_conversation(full_transcript_text)
-        actions_task = extract_action_items(full_transcript_text)
+        # Send initial progress updates via SSE
+        if self.sse_callback:
+            await self.sse_callback(self.session_id, {
+                "type": "agent_progress",
+                "agent": "summary",
+                "status": "started",
+                "progress": 0,
+                "message": "🔍 Summary agent reading transcript..."
+            })
+            
+            await self.sse_callback(self.session_id, {
+                "type": "agent_progress", 
+                "agent": "action_items",
+                "status": "started",
+                "progress": 0,
+                "message": "🔍 Action items agent scanning for tasks..."
+            })
         
-        summary, action_items = await asyncio.gather(summary_task, actions_task)
+        # Create enhanced tasks with progress tracking
+        async def enhanced_summarize_conversation(text):
+            """Enhanced summary task with progress updates"""
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress",
+                    "agent": "summary", 
+                    "progress": 25,
+                    "message": "📊 Analyzing conversation structure..."
+                })
+            
+            # Wait a moment to simulate real processing
+            await asyncio.sleep(0.5)
+            
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress",
+                    "agent": "summary",
+                    "progress": 60,
+                    "message": "🧠 Identifying key themes..."
+                })
+            
+            # Call actual Gemini function
+            result = await summarize_conversation(text)
+            
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress",
+                    "agent": "summary",
+                    "progress": 100,
+                    "message": "✅ Summary generated successfully!"
+                })
+            
+            return result
+        
+        async def enhanced_extract_action_items(text):
+            """Enhanced action items task with progress updates"""
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress",
+                    "agent": "action_items",
+                    "progress": 30,
+                    "message": "📋 Extracting action items..."
+                })
+            
+            # Wait a moment to simulate real processing
+            await asyncio.sleep(0.3)
+            
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress", 
+                    "agent": "action_items",
+                    "progress": 70,
+                    "message": "👤 Identifying responsible parties..."
+                })
+            
+            # Call actual Gemini function
+            result = await extract_action_items(text)
+            
+            if self.sse_callback:
+                await self.sse_callback(self.session_id, {
+                    "type": "agent_progress",
+                    "agent": "action_items", 
+                    "progress": 100,
+                    "message": "✅ Action items extracted successfully!"
+                })
+            
+            return result
+        
+        # Run enhanced analysis in parallel - MUST remain parallel for performance
+        print("🧠 Running parallel Gemini agent analysis...")
+        summary, action_items = await asyncio.gather(
+            enhanced_summarize_conversation(full_transcript_text),
+            enhanced_extract_action_items(full_transcript_text)
+        )
+        print("✅ Parallel Gemini agent analysis complete")
         
         # Stop the STT service
         self.stt_service.stop_recording()

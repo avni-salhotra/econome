@@ -64,18 +64,26 @@ async def summarize_conversation(text: str) -> str:
     into a coherent, readable format while preserving all important information.
     """
     if model is None:
-        return f"Mock summary: Organized thoughts from conversation about {text[:50]}... (Gemini not available)"
+        return f"Mock organized thoughts: Cleaned up rambling from conversation about {text[:50]}... (Gemini not available)"
 
     try:
         prompt = (
-            "You are an expert at concisely summarizing conversations. "
-            "Your task is to organize and structure the following stream-of-consciousness "
-            "thoughts into a coherent, readable summary. Preserve all important "
-            "information, decisions, and outcomes. Use markdown for formatting if needed.\n\n"
-            "Original thoughts:\n"
+            "You are an expert at organizing rambling, stream-of-consciousness thoughts. "
+            "The user just spoke their thoughts out loud, possibly jumping between topics or repeating themselves. "
+            "Your job is to take their raw, unfiltered thoughts and organize them into a clean, structured format.\n\n"
+            "Guidelines:\n"
+            "- Combine related thoughts together\n"
+            "- Remove repetition and filler words\n"
+            "- Create logical flow and structure\n"
+            "- Keep ALL important information and context\n"
+            "- Do NOT create action items - just organize their thoughts\n"
+            "- Use simple, clear language\n"
+            "- Format with short paragraphs for readability\n\n"
+            
+            "Raw thoughts from the user:\n"
             f"{text}\n\n"
             
-            "Organized version:"
+            "Organized thoughts:"
         )
         
         response = await model.generate_content_async(prompt, generation_config=GENERATION_PARAMS)
