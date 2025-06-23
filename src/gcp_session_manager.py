@@ -63,33 +63,47 @@ class GCPEphemeralSessionManager:
         
         if self.use_firestore:
             try:
-                # FIXED: Use explicit credential paths like other services
                 import os
                 from google.oauth2 import service_account
 
-                # Try multiple credential paths (for Cloud Run and local development)
-                credential_paths = [
-                    "/app/secrets/speech/credentials.json",  # New Cloud Run path (separate directories)
-                    "/app/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
-                    "/secrets/speech-credentials.json",  # Legacy Cloud Run path (backward compatibility)
-                    "speech-credentials.json",  # Default path (local development)
-                ]
-
-                credentials_found = False
-                for path in credential_paths:
-                    if os.path.exists(path):
-                        credentials = service_account.Credentials.from_service_account_file(path)
-                        self.db = firestore.Client(project=project_id, credentials=credentials)
-                        self.collection = self.db.collection('ephemeral_sessions')
-                        credentials_found = True
-                        print(f"✅ Firestore initialized with credentials from {path}")
-                        break
-
-                if not credentials_found:
-                    # Fallback to default credentials (for local development with gcloud auth)
+                # 1️⃣ Attempt to use Application Default Credentials first. In Cloud Run this
+                #     picks up the *compute* service-account which already has the required
+                #     Datastore/Firestore role added earlier.
+                try:
                     self.db = firestore.Client(project=project_id)
+                    # A lightweight read to verify permissions (list collections).
+                    list(self.db.collections())
                     self.collection = self.db.collection('ephemeral_sessions')
-                    print("✅ Firestore initialized with default credentials")
+                    print("✅ Firestore initialized with default application credentials (Cloud Run SA)")
+                except Exception as default_err:
+                    print(f"⚠️ Default credentials failed ({default_err}); trying explicit key file…")
+
+                    # 2️⃣ Fallback to bundled key files – mainly for LOCAL DEVELOPMENT.
+                    credential_paths = [
+                        "/app/secrets/firestore/credentials.json",  # dedicated Firestore secret (preferred)
+                        "/app/secrets/speech/credentials.json",      # speech secret (legacy but least-privilege)
+                        "/app/secrets/speech-credentials.json",
+                        "/secrets/speech-credentials.json",
+                        "speech-credentials.json",
+                    ]
+
+                    credentials_found = False
+                    for path in credential_paths:
+                        if os.path.exists(path):
+                            try:
+                                credentials = service_account.Credentials.from_service_account_file(path)
+                                self.db = firestore.Client(project=project_id, credentials=credentials)
+                                # quick check
+                                list(self.db.collections())
+                                self.collection = self.db.collection('ephemeral_sessions')
+                                credentials_found = True
+                                print(f"✅ Firestore initialized with credentials from {path}")
+                                break
+                            except Exception as e_inner:
+                                print(f"❌ Credentials in {path} lack Firestore perms ({e_inner}) – trying next file…")
+
+                    if not credentials_found:
+                        raise RuntimeError("No usable Firestore credentials found")
 
             except Exception as e:
                 print(f"⚠️ Firestore initialization failed: {e}")
@@ -160,7 +174,12 @@ class GCPEphemeralSessionManager:
         return token
     
     def _store_in_memory(self, token: str, session_data: Dict[str, Any]):
-        """Store session in memory as fallback"""
+        """Store session in memory storage (lazy-init if needed)"""
+        # If memory store hasn't been initialised yet (because Firestore was
+        # selected but then failed at runtime), set it up on the fly.
+        if not hasattr(self, "sessions"):
+            self.sessions = {}
+            print("⚠️ Switching to in-memory session storage after Firestore failure")
         self.sessions[token] = EphemeralSession(**session_data)
         print(f"✅ Ephemeral session created in memory: {token[:8]}...")
     
