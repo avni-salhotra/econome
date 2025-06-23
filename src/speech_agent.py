@@ -228,9 +228,12 @@ class ProductionSTTServiceV2:
         """Initialize streaming recognition configuration"""
         if not self._has_credentials:
             print("⚠️ No credentials - skipping streaming config initialization")
+            self._streaming_config = None
             return
             
         try:
+            print("🔧 Initializing streaming configuration...")
+            
             # 🎯 CRITICAL: Use explicit decoding config for Speech V2 instead of auto-detect
             # Based on our frontend audio capture: 16kHz, 16-bit, mono PCM
             recognition_config = speech_v2.RecognitionConfig(
@@ -255,12 +258,51 @@ class ProductionSTTServiceV2:
                 ),
             )
             
+            # 🚨 CRITICAL: Verify streaming config was created properly
+            if self._streaming_config is None:
+                raise Exception("StreamingRecognitionConfig creation returned None")
+            
+            if self._streaming_config.config is None:
+                raise Exception("StreamingRecognitionConfig.config is None")
+                
+            if not self._streaming_config.config.language_codes:
+                raise Exception("StreamingRecognitionConfig.config.language_codes is empty")
+            
             print(f"🔍 StreamingConfig created with language_codes: {self._streaming_config.config.language_codes}")
             print("✅ Streaming recognition configuration initialized with explicit encoding")
             
         except Exception as e:
-            print(f"❌ Failed to initialize streaming config: {e}")
+            print(f"❌ CRITICAL: Failed to initialize streaming config: {e}")
+            print(f"❌ Exception type: {type(e).__name__}")
+            print(f"❌ Exception details: {str(e)}")
+            
+            # 🚨 CRITICAL: Set to None and ensure we have a fallback
             self._streaming_config = None
+            
+            # Try to create a minimal fallback config
+            try:
+                print("🔄 Attempting fallback streaming config...")
+                minimal_config = speech_v2.RecognitionConfig(
+                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
+                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                        sample_rate_hertz=16000,
+                        audio_channel_count=1,
+                    ),
+                    language_codes=["en-US"],
+                    model="default",  # Use default model as fallback
+                )
+                
+                self._streaming_config = speech_v2.StreamingRecognitionConfig(
+                    config=minimal_config,
+                    streaming_features=speech_v2.StreamingRecognitionFeatures(
+                        interim_results=True,
+                    ),
+                )
+                print("✅ Fallback streaming config created successfully")
+                
+            except Exception as fallback_error:
+                print(f"❌ Fallback config also failed: {fallback_error}")
+                self._streaming_config = None
     
     def set_transcript_callback(self, callback: Callable[[TranscriptSegment], None]) -> None:
         """Set callback for real-time transcript segments"""
@@ -384,6 +426,32 @@ class ProductionSTTServiceV2:
             print("❌ CRITICAL: streaming_config is None in generator!")
             print("🔄 Attempting to reinitialize streaming config...")
             self._initialize_streaming_config()
+            
+        # 🚨 CRITICAL: If still None after reinitializing, try one more time with minimal config
+        if self._streaming_config is None:
+            print("🔄 CRITICAL: Creating emergency streaming config in generator...")
+            try:
+                emergency_config = speech_v2.RecognitionConfig(
+                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
+                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
+                        sample_rate_hertz=16000,
+                        audio_channel_count=1,
+                    ),
+                    language_codes=["en-US"],
+                    model="default",
+                )
+                
+                self._streaming_config = speech_v2.StreamingRecognitionConfig(
+                    config=emergency_config,
+                    streaming_features=speech_v2.StreamingRecognitionFeatures(
+                        interim_results=True,
+                    ),
+                )
+                print("✅ Emergency streaming config created in generator")
+                
+            except Exception as emergency_error:
+                print(f"❌ Emergency config failed: {emergency_error}")
+                raise ValueError(f"Failed to create streaming config in generator: {emergency_error}")
             
         if self._streaming_config is None:
             raise ValueError("Failed to initialize streaming config - cannot proceed with streaming")
