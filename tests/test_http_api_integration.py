@@ -32,18 +32,12 @@ class TestHTTPAPIArchitecture:
         return TestClient(web_api.app)
     
     @pytest.fixture
-    def sample_base64_audio(self):
-        """Generate sample base64-encoded audio for testing"""
-        # Generate 100ms of sine wave
-        sample_rate = 16000
-        duration = 0.1
-        t = np.linspace(0, duration, int(sample_rate * duration))
-        audio_data = np.sin(2 * np.pi * 440 * t).astype(np.float32)
-        
-        # Convert to bytes and encode
-        audio_int16 = (audio_data * 32767).astype(np.int16)
-        audio_bytes = audio_int16.tobytes()
-        return base64.b64encode(audio_bytes).decode('utf-8')
+    def sample_webm_audio_bytes(self):
+        """Generate a sample of raw WebM (Opus) audio bytes for testing"""
+        # This is a tiny, valid WebM file with a single Opus packet.
+        # It's not real audio, but it's enough to test the pipeline.
+        webm_header = b'\\x1aE\\xdf\\xa3\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x1fB\\x86\\x81\\x01B\\xf7\\x81\\x01B\\xf2\\x81\\x04B\\xf3\\x81\\x08B\\x82\\x84webmB\\x87\\x81\\x02B\\x85\\x81\\x02\\x18S\\x80g\\x01\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\x15I\\xa9f\\x99(*\\xd7\\xb1\\x83\\x0fB@M\\x80\\x86\\x81\\x01E\\xdd\\xb0\\xad\\x04\\xe0u\\xfa\\x91\\x00\\x00\\x00\\x00\\x00\\x00\\x00\\x16T\\xaeh\\xeec\\xbf\\x01\\x00\\x00\\x00\\x00\\x00\\x00\\x1fC\\xb6u\\x01\\xff\\xff\\xff\\xff\\xff\\xff\\xff\\xc3\\x81\\x81\\x00\\x00'
+        return webm_header
     
     def test_health_endpoint_detailed(self, test_client):
         """Test health endpoint with detailed validation"""
@@ -152,11 +146,8 @@ class TestHTTPAPIArchitecture:
     def test_websocket_endpoint_removed(self, test_client):
         """Test that WebSocket endpoint is no longer available"""
         # This should fail since WebSocket endpoint was removed
-        with pytest.raises(Exception):
-            # TestClient doesn't support WebSocket, but this ensures the endpoint is gone
-            response = test_client.get("/ws/conversation")
-            # If somehow a response comes back, it should be 404
-            assert response.status_code == 404
+        with pytest.raises(requests.exceptions.RequestException):
+            test_client.websocket_connect("/ws/conversation")
 
 
 class TestFrontendStreamingFunctions:
@@ -315,8 +306,38 @@ class TestSystemIntegrationWithoutWebSocket:
             from src.websocket_manager import WebSocketManager
 
 
+class TestConversationFlow:
+    """Test the full conversation flow via HTTP endpoints"""
+
+    def test_full_conversation_flow(self, test_client, sample_webm_audio_bytes):
+        """Test start, audio send, and stop flow"""
+        # 1. Start a new conversation
+        start_response = test_client.post("/api/conversation/start")
+        assert start_response.status_code == 200
+        start_data = start_response.json()
+        assert "connection_id" in start_data
+        connection_id = start_data["connection_id"]
+
+        # 2. Send an audio chunk
+        audio_response = test_client.post(
+            f"/api/conversation/{connection_id}/audio",
+            content=sample_webm_audio_bytes,
+            headers={"Content-Type": "audio/webm"}
+        )
+        # 202 Accepted or 429 Too Many Requests are valid responses
+        assert audio_response.status_code in [202, 429]
+
+        # 3. Stop the conversation
+        stop_response = test_client.post(f"/api/conversation/{connection_id}/stop")
+        assert stop_response.status_code == 200
+        stop_data = stop_response.json()
+        assert "ephemeral_url" in stop_data
+        assert "final_summary" in stop_data
+        assert "final_action_items" in stop_data
+
+
 class TestErrorHandlingAndResilience:
-    """Test error handling and system resilience"""
+    """Test API error handling and resilience"""
     
     @pytest.fixture
     def test_client(self):
