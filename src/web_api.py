@@ -61,14 +61,23 @@ sse_connections: Dict[str, asyncio.Queue] = {}
 # Store active conversation systems per connection
 active_conversations: Dict[str, ConversationIntelligenceSystem] = {}
 
+# Set maximum allowed upload size for a single /audio POST (bytes)
+MAX_UPLOAD_BYTES = 1 * 1024 * 1024  # 1 MB prevents abuse / accidental huge chunks
+# Back-pressure threshold (fraction of queue capacity)
+QUEUE_BACKPRESSURE_THRESHOLD = 0.9
+
 @app.on_event("startup")
 async def startup_event():
-    """Initialize services on startup"""
+    """Initialize services on startup and schedule background tasks"""
     logger.info("🚀 Starting Econome Web API...")
 
     # Test session manager
     stats = await session_manager.get_session_stats()
     logger.info(f"📊 Session manager stats: {stats}")
+
+    # Schedule periodic dump
+    asyncio.create_task(periodic_state_dump())
+    logger.info("🚀 Periodic state dump task scheduled (60s interval)")
 
     logger.info("✅ Econome Web API startup complete")
 
@@ -285,46 +294,52 @@ async def receive_audio_chunk(connection_id: str, request: Request):
     
     conversation_system = active_conversations[connection_id]
     
-    # Check content type to handle both JSON and raw audio data
+    # --- Queue back-pressure check --------------------------------------------------
+    try:
+        stt_agent = conversation_system.get_agent("stt")
+        stt_service = stt_agent.stt_service if stt_agent and hasattr(stt_agent, "stt_service") else None
+        if stt_service and hasattr(stt_service, "_audio_queue"):
+            if stt_service._audio_queue.qsize() >= int(getattr(stt_service, "max_queue_size", 100) * QUEUE_BACKPRESSURE_THRESHOLD):
+                raise HTTPException(status_code=429, detail="Server busy – please retry (audio queue full)")
+    except Exception:
+        # If anything goes wrong here we'd rather continue than crash
+        pass
+
+    # ------------------------------------------------------------------------------
     content_type = request.headers.get('content-type', '').lower()
-    
+
     if 'application/json' in content_type:
         # Handle JSON input from frontend
         try:
             json_data = await request.json()
             audio_base64 = json_data.get('audio_data')
             mime_type = json_data.get('format', 'webm')
-            
             if not audio_base64:
                 raise HTTPException(status_code=400, detail="No audio_data in JSON payload")
-            
-            # Audio data is already base64 encoded from frontend
-            logger.debug(f"📡 Received JSON audio chunk: {len(audio_base64)} chars, format: {mime_type}")
-            
+            if len(audio_base64) > MAX_UPLOAD_BYTES * 1.37:  # base64 overhead ~37 %
+                raise HTTPException(status_code=413, detail="Audio chunk too large")
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"❌ Failed to parse JSON audio data: {e}")
             raise HTTPException(status_code=400, detail=f"Invalid JSON audio data: {str(e)}")
     else:
-        # Handle raw binary audio data (legacy support)
-        audio_data = await request.body()
-        
-        if not audio_data:
+        # Handle raw binary audio data (preferred)
+        audio_bytes = await request.body()
+        if not audio_bytes:
             raise HTTPException(status_code=400, detail="No audio data received")
-        
-        # Convert raw audio to base64 for processing
-        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        if len(audio_bytes) > MAX_UPLOAD_BYTES:
+            raise HTTPException(status_code=413, detail="Audio chunk too large")
+        audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
         mime_type = request.headers.get('content-type', 'audio/webm')
-        
-        logger.debug(f"📡 Received raw audio chunk: {len(audio_data)} bytes, format: {mime_type}")
-    
+
     # Process the audio chunk
     result = await process_frontend_audio_chunk(
-        connection_id, 
-        audio_base64, 
-        f"audio/{mime_type}",  # Ensure proper MIME type format
-        conversation_system
+        connection_id,
+        audio_base64,
+        f"audio/{mime_type}",
+        conversation_system,
     )
-    
+
     return {"status": "processed", "result": result}
 
 @app.post("/api/conversation/{connection_id}/stop")
@@ -721,13 +736,11 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     logger.info(f"🔧 Processing first chunk with header ({len(audio_bytes)} bytes)")
                 
                 # Process with FFmpeg using headerless matroska strategy
-                import subprocess
+                import subprocess, functools, asyncio
 
-                # OBSERVABILITY: FFmpeg timing start
                 ffmpeg_start_time = datetime.now()
-                ffmpeg_start_timestamp = ffmpeg_start_time.timestamp() * 1000  # milliseconds
+                ffmpeg_start_timestamp = ffmpeg_start_time.timestamp() * 1000
 
-                # STRUCTURED LOGGING: FFmpeg processing stage
                 ffmpeg_context = {
                     **pipeline_context,
                     "pipeline_stage": "ffmpeg_webm_opus_strategy_a",
@@ -735,31 +748,34 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                     "processing_strategy": processing_strategy,
                     "ffmpeg_start_timestamp": ffmpeg_start_timestamp
                 }
-                logger.info(f"🔧 AUDIO_PIPELINE_FFMPEG_STRATEGY_A: {ffmpeg_context}")
+                logger.debug(f"🔧 AUDIO_PIPELINE_FFMPEG_STRATEGY_A: {ffmpeg_context}")
 
-                # Use headerless WebM parsing (Strategy A optimized)
                 ffmpeg_cmd_headerless = [
                     'ffmpeg',
-                    '-f', 'matroska',       # More lenient than 'webm' for headerless chunks
-                    '-fflags', '+ignidx',   # Ignore index corruption
-                    '-analyzeduration', '0', # Don't wait for complete headers
-                    '-probesize', '32',     # Minimal probing for faster processing
-                    '-i', 'pipe:0',         # Input from stdin
-                    '-f', 's16le',          # Output format (PCM 16-bit little endian)
-                    '-acodec', 'pcm_s16le', # PCM codec
-                    '-ar', '16000',         # 16kHz sample rate
-                    '-ac', '1',             # Mono channel
-                    '-loglevel', 'error',   # Suppress FFmpeg logs
-                    'pipe:1'                # Output to stdout
+                    '-f', 'matroska',
+                    '-fflags', '+ignidx',
+                    '-analyzeduration', '0',
+                    '-probesize', '32',
+                    '-i', 'pipe:0',
+                    '-f', 's16le',
+                    '-acodec', 'pcm_s16le',
+                    '-ar', '16000',
+                    '-ac', '1',
+                    '-loglevel', 'error',
+                    'pipe:1'
                 ]
 
-                # Process with FFmpeg
-                process = subprocess.run(
-                    ffmpeg_cmd_headerless,
-                    input=processing_bytes,
-                    capture_output=True,
-                    timeout=10
-                )
+                loop = asyncio.get_running_loop()
+
+                def _run_ffmpeg(inp: bytes):
+                    return subprocess.run(
+                        ffmpeg_cmd_headerless,
+                        input=inp,
+                        capture_output=True,
+                        timeout=10,
+                    )
+
+                process = await loop.run_in_executor(None, functools.partial(_run_ffmpeg, processing_bytes))
 
                 # OBSERVABILITY: FFmpeg timing end
                 ffmpeg_end_time = datetime.now()
@@ -783,7 +799,7 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
                         "ffmpeg_end_timestamp": ffmpeg_end_timestamp,
                         "ffmpeg_latency_ms": round(ffmpeg_latency_ms, 2)
                     }
-                    logger.info(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS_STRATEGY_A: {success_context}")
+                    logger.debug(f"✅ AUDIO_PIPELINE_FFMPEG_SUCCESS_STRATEGY_A: {success_context}")
                 else:
                     # Strategy A failed - log detailed error
                     ffmpeg_error = process.stderr.decode('utf-8') if process.stderr else "Unknown FFmpeg error"
@@ -1358,13 +1374,6 @@ async def periodic_state_dump():
 
         except Exception as e:
             logger.error(f"❌ Error in periodic state dump: {e}")
-
-# Start periodic state dump task
-@app.on_event("startup")
-async def startup_event():
-    """Start background tasks on application startup"""
-    asyncio.create_task(periodic_state_dump())
-    logger.info("🚀 Periodic state dump task started (60s interval)")
 
 if __name__ == "__main__":
     # Run the server
