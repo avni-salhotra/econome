@@ -624,8 +624,13 @@ class ProductionSTTServiceV2:
         if not self._stream_start_time:
             return False
             
-        # Restart every 4 minutes (GCP limit is 5 minutes)
-        return (time.time() - self._stream_start_time) > self._stream_duration_limit
+        # Restart every 4 minutes (GCP limit is 5 minutes) *and* only if all
+        # pending audio has been drained – prevents mid-phrase cut-off.
+        if (time.time() - self._stream_start_time) <= self._stream_duration_limit:
+            return False
+
+        # Defer restart until queue is empty
+        return self._audio_queue.empty()
     
     def _restart_streaming_session(self) -> None:
         """Restart the streaming session"""
