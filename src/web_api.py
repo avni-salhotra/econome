@@ -254,10 +254,10 @@ async def start_conversation():
     """Start a new conversation session"""
     connection_id = str(uuid.uuid4())
     
-    # Create conversation system with proper Cloud Run configuration
-    # Detect Cloud Run environment and enable mock mode if no audio hardware
+    # Create conversation system with REAL Google Cloud STT (not mock)
+    # Even in Cloud Run, we want real speech recognition for actual conversations
     from .speech_agent import CLOUD_RUN_MODE
-    conversation_system = ConversationIntelligenceSystem(mock_mode=CLOUD_RUN_MODE)
+    conversation_system = ConversationIntelligenceSystem(mock_mode=False)  # 🎤 FORCE REAL STT
     
     # CRITICAL: Start the system to build agents
     session_id = await conversation_system.start_system()
