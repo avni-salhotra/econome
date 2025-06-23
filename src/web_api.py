@@ -349,54 +349,47 @@ async def stop_conversation(connection_id: str):
     """Stop the conversation and trigger final analysis"""
     if connection_id not in active_conversations:
         raise HTTPException(status_code=404, detail="Conversation not found")
-    
-    conversation_system = active_conversations[connection_id]
-    
+
+    conversation_system = active_conversations.get(connection_id)
+    if not conversation_system:
+        raise HTTPException(status_code=404, detail="Conversation system not found for this ID.")
+
     try:
-        # Stop the conversation system
-        result = conversation_system.stop_system()
-        
-        # Wait a moment for final processing
-        await asyncio.sleep(2)
-        
-        # Get results
-        summary = getattr(conversation_system, 'summary', 'No summary available')
-        action_items = getattr(conversation_system, 'action_items', [])
-        
-        # Create ephemeral session
+        # This now triggers the full parallel analysis pipeline
+        final_results = await conversation_system.stop_conversation()
+
+        # Save results to ephemeral storage
         token = await session_manager.create_session(
-            summary=summary,
-            action_items=action_items,
-            session_metadata={
-                "connection_id": connection_id,
-                "session_type": "real_time"
-            }
+            summary=final_results.get("summary", "No summary available."),
+            action_items=final_results.get("action_items", []),
+            session_metadata={"connection_id": connection_id}
         )
         
-        base_url = os.getenv("BASE_URL", "http://localhost:8080")
-        ephemeral_url = f"{base_url}/api/results/{token}"
-        
-        # Clean up
-        del active_conversations[connection_id]
-        if connection_id in sse_connections:
-            del sse_connections[connection_id]
-        
-        return {
-            "status": "completed",
-            "summary": summary,
-            "action_items": action_items,
+        ephemeral_url = f"/api/results/{token}"
+
+        # Combine results for the final response
+        response_data = {
+            "message": "Conversation stopped and analyzed.",
             "ephemeral_url": ephemeral_url,
-            "expires_in_hours": 24
+            "final_summary": final_results.get("summary"),
+            "final_action_items": final_results.get("action_items"),
+            "stt_statistics": final_results.get("stt_statistics")
         }
-        
-    except Exception as e:
-        logger.error(f"Error stopping conversation {connection_id}: {e}")
-        # Clean up on error
+
+        # Clean up
         if connection_id in active_conversations:
             del active_conversations[connection_id]
         if connection_id in sse_connections:
             del sse_connections[connection_id]
-        raise HTTPException(status_code=500, detail=f"Error stopping conversation: {str(e)}")
+            
+        return JSONResponse(content=response_data)
+
+    except Exception as e:
+        logger.error(f"❌ Error stopping conversation {connection_id}: {e}")
+        # Use traceback for better error logging in production
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to stop conversation: {str(e)}")
 
 @app.get("/api/conversation/{connection_id}/events")
 async def stream_events(connection_id: str):

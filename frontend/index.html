@@ -640,11 +640,15 @@ Would you like to try Demo Mode instead?`;
                 // Stop the conversation on the backend
                 if (this.connectionId) {
                     try {
-                        await fetch(`/api/conversation/${this.connectionId}/stop`, {
+                        const response = await fetch(`/api/conversation/${this.connectionId}/stop`, {
                             method: 'POST'
                         });
+                        const data = await response.json();
+                        // This now receives the full analysis payload
+                        this.handleConversationComplete(data);
                     } catch (error) {
                         console.error('Error stopping conversation:', error);
+                        this.handleError({ message: 'Failed to stop session.' });
                     }
                 }
 
@@ -980,11 +984,16 @@ Would you like to try Demo Mode instead?`;
              */
             handleConversationComplete(event) {
                 this.updateStatus('complete', 'Analysis complete');
-                if (event?.summary || event?.action_items) {
-                    this.displayResults({
-                        summary: event.summary,
-                        action_items: event.action_items || []
-                    }, event.ephemeral_url || '');
+                this.processingStatus.classList.add('hidden');
+                
+                // Use the new keys from the parallel analysis response
+                const results = {
+                    summary: event.final_summary,
+                    action_items: event.final_action_items || []
+                };
+
+                if (results.summary || results.action_items.length > 0) {
+                    this.displayResults(results, event.ephemeral_url || '');
                 }
                 this.resetControls();
             }
