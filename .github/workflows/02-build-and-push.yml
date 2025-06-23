@@ -183,9 +183,9 @@ jobs:
           echo "🔍 Checking build status: $BUILD_ID"
 
           # Wait for build completion with timeout
-          TIMEOUT=1200  # 20 minutes
+          TIMEOUT=600  # 🚀 OPTIMIZED: 10 minutes (was 20 minutes)
           ELAPSED=0
-          INTERVAL=30
+          INTERVAL=15  # 🚀 OPTIMIZED: 15s polling (was 30s)
 
           while [ $ELAPSED -lt $TIMEOUT ]; do
             STATUS=$(gcloud builds describe "$BUILD_ID" --format="value(status)" 2>/dev/null || echo "UNKNOWN")
@@ -258,12 +258,12 @@ jobs:
         echo "🔍 Verifying build-${{ github.run_number }} tag was created..."
 
         # Wait a moment for registry propagation
-        echo "⏱️ Waiting 10 seconds for registry propagation..."
-        sleep 10
+        echo "⏱️ Waiting 3 seconds for registry propagation..."
+        sleep 3  # 🚀 OPTIMIZED: 3s (was 10s)
 
         # Retry logic for tag verification
-        MAX_RETRIES=5
-        RETRY_DELAY=10
+        MAX_RETRIES=3  # 🚀 OPTIMIZED: 3 retries (was 5)
+        RETRY_DELAY=5  # 🚀 OPTIMIZED: 5s delay (was 10s)
         RETRY_COUNT=0
         TAG_FOUND=false
 
@@ -337,12 +337,12 @@ jobs:
         echo "  - Repository: ${{ github.repository }}"
 
         # Brief wait to ensure build job completion is fully processed
-        echo "⏱️ Waiting 10 seconds to ensure build completion is processed..."
-        sleep 10
+        echo "⏱️ Waiting 2 seconds to ensure build completion is processed..."
+        sleep 2  # 🚀 OPTIMIZED: 2s (was 10s)
 
         # Trigger the staging deployment workflow
         # Note: Image verification will be handled by the staging deployment workflow
-        gh workflow run "03 - Deploy Staging" \
+        gh workflow run "03-deploy-staging.yml" \
           --field image-tag="${{ github.run_number }}" \
           --field build-id="${{ github.run_id }}" \
           --repo "${{ github.repository }}"
@@ -354,14 +354,12 @@ jobs:
     - name: "🔍 Verify workflow trigger"
       run: |
         echo "🔍 Verifying staging deployment workflow was triggered..."
-        sleep 5  # Give GitHub a moment to register the workflow run
+        # 🚀 OPTIMIZED: Removed 5s wait - GitHub registers workflows immediately
 
         # Check recent workflow runs
-        RECENT_RUNS=$(gh run list --workflow="03 - Deploy Staging" --limit=1 --json status,createdAt,conclusion)
+        RECENT_RUNS=$(gh run list --workflow="03-deploy-staging.yml" --limit=1 --json status,createdAt,conclusion)
         echo "📊 Recent staging workflow runs:"
         echo "$RECENT_RUNS"
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
     - name: "📢 Notify staging deployment"
       run: |
