@@ -92,10 +92,21 @@ class ExceptionLoggingMiddleware(BaseHTTPMiddleware):
         try:
             return await call_next(request)
         except Exception as e:
-            logger.error(f"Unhandled exception: {e}\\n{traceback.format_exc()}")
+            # Log the full traceback
+            import traceback
+            tb_str = traceback.format_exc()
+            logger.error(f"💥 Unhandled exception: {tb_str}")
+            
+            # --- TEMPORARY DEBUGGING CHANGE ---
+            # Return the full traceback in the response body
+            # to bypass log truncation issues in Cloud Run.
             return JSONResponse(
                 status_code=500,
-                content={"message": "An internal server error occurred."}
+                content={
+                    "error": "Internal Server Error",
+                    "exception_type": str(type(e).__name__),
+                    "traceback": tb_str
+                }
             )
 
 app.add_middleware(ExceptionLoggingMiddleware)
