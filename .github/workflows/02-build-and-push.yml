@@ -342,7 +342,7 @@ jobs:
 
         # Trigger the staging deployment workflow
         # Note: Image verification will be handled by the staging deployment workflow
-        gh workflow run "03 - Deploy Staging" \
+        gh workflow run "03-deploy-staging.yml" \
           --field image-tag="${{ github.run_number }}" \
           --field build-id="${{ github.run_id }}" \
           --repo "${{ github.repository }}"
