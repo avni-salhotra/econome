@@ -285,17 +285,43 @@ async def receive_audio_chunk(connection_id: str, request: Request):
     
     conversation_system = active_conversations[connection_id]
     
-    # Read audio data from request body
-    audio_data = await request.body()
+    # Check content type to handle both JSON and raw audio data
+    content_type = request.headers.get('content-type', '').lower()
     
-    # Convert to base64 for processing
-    audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+    if 'application/json' in content_type:
+        # Handle JSON input from frontend
+        try:
+            json_data = await request.json()
+            audio_base64 = json_data.get('audio_data')
+            mime_type = json_data.get('format', 'webm')
+            
+            if not audio_base64:
+                raise HTTPException(status_code=400, detail="No audio_data in JSON payload")
+            
+            # Audio data is already base64 encoded from frontend
+            logger.debug(f"📡 Received JSON audio chunk: {len(audio_base64)} chars, format: {mime_type}")
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to parse JSON audio data: {e}")
+            raise HTTPException(status_code=400, detail=f"Invalid JSON audio data: {str(e)}")
+    else:
+        # Handle raw binary audio data (legacy support)
+        audio_data = await request.body()
+        
+        if not audio_data:
+            raise HTTPException(status_code=400, detail="No audio data received")
+        
+        # Convert raw audio to base64 for processing
+        audio_base64 = base64.b64encode(audio_data).decode('utf-8')
+        mime_type = request.headers.get('content-type', 'audio/webm')
+        
+        logger.debug(f"📡 Received raw audio chunk: {len(audio_data)} bytes, format: {mime_type}")
     
     # Process the audio chunk
     result = await process_frontend_audio_chunk(
         connection_id, 
         audio_base64, 
-        request.headers.get('content-type', 'audio/webm'),
+        f"audio/{mime_type}",  # Ensure proper MIME type format
         conversation_system
     )
     
