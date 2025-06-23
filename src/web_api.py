@@ -396,10 +396,10 @@ async def send_sse_event(connection_id: str, event_data: dict):
             logger.error(f"Error sending SSE event: {e}")
 
 # Replace WebSocket message logging with SSE events
-async def log_websocket_message(connection_id: str, message: dict):
-    """Send message as SSE event instead of WebSocket"""
+async def send_conversation_event(connection_id: str, message: dict):
+    """Send conversation event as SSE"""
     await send_sse_event(connection_id, message)
-    logger.info(f"📤 SSE message sent: {connection_id} -> {message.get('type', 'unknown')}")
+    logger.info(f"📤 SSE event sent: {connection_id} -> {message.get('type', 'unknown')}")
 
 async def start_frontend_streaming_mode(connection_id: str, conversation_system: ConversationIntelligenceSystem):
     """
@@ -973,8 +973,8 @@ async def process_frontend_audio_chunk(connection_id: str, audio_data: str, mime
         # WebSocket functionality removed - error logged instead of sent
         logger.error(f"Audio processing error for {connection_id}: {error_response}")
 
-async def handle_websocket_command(connection_id: str, command: Dict[str, Any], conversation_system: ConversationIntelligenceSystem):
-    """Handle WebSocket commands from frontend"""
+async def handle_http_command(connection_id: str, command: Dict[str, Any], conversation_system: ConversationIntelligenceSystem):
+    """Handle HTTP commands from frontend"""
     action = command.get("action")
 
     # 🔍 CRITICAL DEBUG: Command handling entry point
@@ -986,7 +986,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
         "has_audio_data": "audio_data" in command,
         "audio_data_length": len(command.get("audio_data", "")) if "audio_data" in command else 0
     }
-    logger.info(f"🔧 DEBUG_WEBSOCKET_COMMAND: {command_debug}")
+            logger.info(f"🔧 DEBUG_HTTP_COMMAND: {command_debug}")
 
     try:
         if action == "start_recording":
@@ -1086,7 +1086,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             }
             logger.info(f"📤 DEBUG_START_RECORDING_RESPONSE: {response_debug}")
 
-            await log_websocket_message(connection_id, response_data)
+            await send_conversation_event(connection_id, response_data)
 
             if result.get("success"):
                 logger.info(f"🎤 Recording started for {browser} session {connection_id[:8]}... (mode: {mode})")
@@ -1170,7 +1170,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             result = await conversation_system.stop_conversation()
 
             # Send response
-            await log_websocket_message(connection_id, {
+            await send_conversation_event(connection_id, {
                 "type": "recording_stopped",
                 "success": result.get("success", True),
                 "message": result.get("message", "Recording stopped"),
@@ -1185,7 +1185,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
         elif action == "get_status":
             # Get system status
             status = conversation_system.get_conversation_status()
-            await log_websocket_message(connection_id, {
+            await send_conversation_event(connection_id, {
                 "type": "status_update",
                 "status": status,
                 "timestamp": datetime.now().isoformat()
@@ -1201,7 +1201,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
             }
             logger.warning(f"⚠️ DEBUG_UNKNOWN_ACTION: {unknown_debug}")
 
-            await log_websocket_message(connection_id, {
+            await send_conversation_event(connection_id, {
                 "type": "error",
                 "message": f"Unknown action: {action}",
                 "timestamp": datetime.now().isoformat()
@@ -1223,7 +1223,7 @@ async def handle_websocket_command(connection_id: str, command: Dict[str, Any], 
         }
         logger.error(f"🔍 DEBUG_COMMAND_ERROR: {error_debug}")
         
-        await log_websocket_message(connection_id, {
+        await send_conversation_event(connection_id, {
             "type": "error",
             "message": f"Command error: {str(e)}",
             "action": action,
