@@ -159,6 +159,7 @@ class ProductionSTTServiceV2:
         self._stream_active = False
         self._stream_lock = threading.Lock()
         self._restart_stream_event = threading.Event()
+        self._stop_event = threading.Event() # Use an event for cleaner shutdown
         
         # Stream health monitoring
         self._stream_start_time = None
@@ -323,378 +324,226 @@ class ProductionSTTServiceV2:
         self._status_callback = callback
     
     def _audio_callback(self, indata: np.ndarray, frames: int, time_info, status) -> None:
+        """Callback from sounddevice to add audio data to the queue."""
         if status:
-            print(f"⚠️ Audio status: {status}")
-            if self._error_callback:
-                self._error_callback("audio_capture", Exception(f"Audio status: {status}"))
-
-        if self._is_recording:
+            print(f"⚠️ Audio callback status: {status}")
+        
+        # Only queue if recording is active
+        if self._is_recording and not self._stop_event.is_set():
             try:
-                if not self._audio_queue.full():
-                    self._audio_queue.put(indata.copy(), block=False)
-                else:
-                    try:
-                        self._audio_queue.get_nowait()
-                        self._audio_queue.put(indata.copy(), block=False)
-                    except queue.Empty:
-                        pass
-            except Exception as e:
-                if self._error_callback:
-                    self._error_callback("audio_queue", e)
-    
+                self._audio_queue.put_nowait(indata.copy())
+            except queue.Full:
+                self._handle_error("audio_queue_full", "Audio queue is full, dropping audio chunk.")
+
     def _process_audio_chunks(self) -> None:
-        """🚨 NEW: Process audio chunks with STREAMING Google Speech V2 recognition"""
-        from datetime import datetime
-        print("🔄 STREAMING audio processing thread started")
-        
-        if not self._has_credentials:
-            print("⚠️ No credentials - falling back to mock processing")
-            self._mock_audio_processing()
-            return
-            
-        # Start streaming recognition
-        try:
-            self._start_streaming_recognition()
-        except Exception as e:
-            print(f"❌ Failed to start streaming recognition: {e}")
-            if self._error_callback:
-                self._error_callback("streaming_start", e)
-            return
-
-        print("🏁 STREAMING audio processing thread finished")
-    
-    def _start_streaming_recognition(self) -> None:
-        """🚨 CRITICAL: Start bidirectional streaming recognition"""
-        print("🎤 Starting streaming recognition...")
-        
-        while self._is_recording:
+        """
+        Processes audio chunks from the queue for the lifetime of a single
+        streaming session. Exits when a stream restart is needed or when stopped.
+        """
+        while not self._restart_stream_event.is_set() and not self._stop_event.is_set():
             try:
-                # Only (re)create the streaming session once we have *some* audio
-                # in the queue. Spinning up a session with zero audio causes the
-                # Speech-to-Text service to immediately abort with
-                # "409 Stream timed out after receiving no more client requests".
-                #
-                # By waiting until the first audio chunk is available we ensure
-                # the generator can deliver media within a few milliseconds of
-                # sending the initial config request, eliminating the spurious
-                # timeout and the rapid creation/teardown loop observed in the
-                # logs.
-                with self._stream_lock:
-                    if not self._stream_active:
-                        # Defer session creation until at least one chunk is queued
-                        if self._audio_queue.qsize() == 0:
-                            time.sleep(0.05)
-                            continue
-                        self._create_streaming_session()
-                
-                # Check if we need to restart the stream (GCP 5-minute limit)
+                # Check for stream timeout
                 if self._should_restart_stream():
-                    print("🔄 Restarting stream due to time limit")
-                    self._restart_streaming_session()
-                
-                # Process any pending audio chunks
+                    print("🔄 Stream time limit reached, signaling restart.")
+                    self._restart_stream_event.set()
+                    continue
+
                 self._send_audio_to_stream()
-                
-                # Small sleep to prevent busy waiting
-                time.sleep(0.01)  # 10ms
-                
+                self._log_thread_heartbeat()
+
             except Exception as e:
-                print(f"❌ Streaming recognition error: {e}")
-                if self._error_callback:
-                    self._error_callback("streaming_recognition", e)
-                
-                # Try to restart the stream
-                with self._stream_lock:
-                    self._stream_active = False
-                time.sleep(1.0)  # Wait before retry
-    
-    def _create_streaming_session(self) -> None:
-        """Create a new streaming recognition session"""
-        try:
-            print("🚀 Creating new streaming session...")
+                self._handle_error("process_audio_chunks_error", e)
+                self._restart_stream_event.set() # Signal restart on error
 
-            # 🚩 Activate stream *before* we create the gRPC call so that the
-            #     _audio_chunk_generator while-loop sees _stream_active == True
-            self._stream_active = True  # must be set early so generator runs
-            self._stream_start_time = time.time()
+    def _start_streaming_recognition(self) -> None:
+        """Manages the lifecycle of streaming recognition sessions."""
+        self._stop_event.clear()
+        self._stream_restart_count = 0
 
-            # Create streaming client
-            self._streaming_client = self.speech_client.streaming_recognize(
-                requests=self._audio_chunk_generator()
-            )
-
-            # Start response processing in separate thread
-            response_thread = threading.Thread(
-                target=self._process_streaming_responses,
-                daemon=True
-            )
-            response_thread.start()
+        while not self._stop_event.is_set():
+            self._restart_stream_event.clear()
             
+            # Create a new session
+            if not self._create_streaming_session():
+                self._handle_error("stream_creation_failed", "Could not create streaming session.")
+                break
+
+            # Each session gets its own processing thread
+            session_thread = threading.Thread(target=self._process_audio_chunks)
+            session_thread.start()
+            session_thread.join() # Wait for the session to end (restart or stop)
+
+            if self._stop_event.is_set():
+                print("🛑 Stop event received, terminating streaming recognition.")
+                break
+            
+            # If we are here, it means a restart was triggered
+            print("🔄 Restarting streaming session...")
             self._stream_restart_count += 1
-            
-            print(f"✅ Streaming session #{self._stream_restart_count} created successfully")
-            
-        except Exception as e:
-            print(f"❌ Failed to create streaming session: {e}")
-            self._stream_active = False
-            raise
-    
+            self._last_stream_restart = time.time()
+            # The loop will now create a new session
+
+        print("✅ Streaming recognition fully terminated.")
+
+    def _create_streaming_session(self) -> bool:
+        """
+        Initializes a new streaming recognition client and starts the
+        response processing thread.
+        """
+        with self._stream_lock:
+            try:
+                print("🚀 Creating new streaming session...")
+                if not self._has_credentials:
+                    print("⚠️ Mock mode: skipping stream creation.")
+                    return True # In mock mode, we can proceed
+
+                # Generate the streaming requests
+                requests = self._audio_chunk_generator()
+                
+                # Get the streaming client
+                self._streaming_client = self.speech_client.streaming_recognize(
+                    requests=requests,
+                    config=self._streaming_config
+                )
+                self._stream_active = True
+                self._stream_start_time = time.time()
+                
+                # Start a thread to process responses from this stream
+                self._response_thread = threading.Thread(target=self._process_streaming_responses)
+                self._response_thread.start()
+                
+                print(f"✅ Streaming session #{self._stream_restart_count + 1} created successfully")
+                return True
+
+            except Exception as e:
+                self._handle_error("create_stream_error", e)
+                self._stream_active = False
+                return False
+
     def _audio_chunk_generator(self):
-        """🚨 CRITICAL: Generator that yields audio chunks for streaming (Speech V2 pattern)"""
-        # First, send the recognizer and streaming config (Speech V2 API pattern)
-        # According to V2 docs: "the first message must contain recognizer and streaming_config"
+        """
+        A generator that yields audio chunks from the queue.
+        This is the main input to the Google Cloud Speech API.
+        """
+        # First request must be the config
+        yield speech_v2.StreamingRecognizeRequest(recognizer=self.recognizer)
         
-        # 🚨 CRITICAL: Safety check for None streaming config
-        if self._streaming_config is None:
-            print("❌ CRITICAL: streaming_config is None in generator!")
-            print("🔄 Attempting to reinitialize streaming config...")
-            self._initialize_streaming_config()
-            
-        # 🚨 CRITICAL: If still None after reinitializing, try one more time with minimal config
-        if self._streaming_config is None:
-            print("🔄 CRITICAL: Creating emergency streaming config in generator...")
-            try:
-                emergency_config = speech_v2.RecognitionConfig(
-                    explicit_decoding_config=speech_v2.ExplicitDecodingConfig(
-                        encoding=speech_v2.ExplicitDecodingConfig.AudioEncoding.LINEAR16,
-                        sample_rate_hertz=16000,
-                        audio_channel_count=1,
-                    ),
-                    language_codes=["en-US"],
-                    model="default",
-                )
-                
-                self._streaming_config = speech_v2.StreamingRecognitionConfig(
-                    config=emergency_config,
-                    streaming_features=speech_v2.StreamingRecognitionFeatures(
-                        interim_results=True,
-                    ),
-                )
-                print("✅ Emergency streaming config created in generator")
-                
-            except Exception as emergency_error:
-                print(f"❌ Emergency config failed: {emergency_error}")
-                raise ValueError(f"Failed to create streaming config in generator: {emergency_error}")
-            
-        if self._streaming_config is None:
-            raise ValueError("Failed to initialize streaming config - cannot proceed with streaming")
-        
-        print(f"🔍 STREAMING_REQUEST: recognizer={self.recognizer}")
-        print(f"🔍 STREAMING_REQUEST: config.language_codes={self._streaming_config.config.language_codes}")
-        
-        yield speech_v2.StreamingRecognizeRequest(
-            recognizer=self.recognizer,
-            streaming_config=self._streaming_config
-        )
-        
-        # Then continuously yield audio chunks
-        while self._is_recording and self._stream_active:
-            try:
-                # Get audio chunk with timeout
-                chunk_data = self._audio_queue.get(timeout=0.1)
-                
-                # Handle timestamped chunks
-                if isinstance(chunk_data, dict) and "audio_data" in chunk_data:
-                    audio_chunk = chunk_data["audio_data"]
-                    chunk_id = chunk_data.get("chunk_id", self._chunk_counter)
-                    
-                    # Log chunk processing
-                    print(f"🔍 STREAMING_CHUNK_SENT: chunk_id={chunk_id}, shape={audio_chunk.shape}")
-                else:
-                    audio_chunk = chunk_data
-                
-                # Convert to bytes
-                # 🚨 CRITICAL FIX: Audio values are already in proper range from FFmpeg
-                # Don't multiply by 32767 - FFmpeg already outputs int16-range values as float32
-                # Just convert from float32 to int16 without scaling
-                if audio_chunk.dtype == np.float32:
-                    # Check if values are normalized (-1 to 1) or already scaled
-                    max_val = np.abs(audio_chunk).max()
-                    if max_val <= 1.0:
-                        # Values are normalized, scale them
-                        audio_int16 = (audio_chunk.flatten() * 32767).astype(np.int16)
-                        print(f"🔍 AUDIO_SCALING: normalized->int16 (max_val: {max_val:.3f})")
-                    else:
-                        # Values are already scaled, just convert type
-                        audio_int16 = audio_chunk.flatten().astype(np.int16)
-                        print(f"🔍 AUDIO_SCALING: already_scaled->int16 (max_val: {max_val:.0f})")
-                else:
-                    # Already int16 or other integer type
-                    audio_int16 = audio_chunk.flatten().astype(np.int16)
-                    print(f"🔍 AUDIO_SCALING: direct conversion from {audio_chunk.dtype}")
-                
-                audio_bytes = audio_int16.tobytes()
-                
-                # ────────────────────────────────────────────────
-                #   DIAGNOSTIC LOG – one line per original chunk
-                # ────────────────────────────────────────────────
-                now_ts = time.time()
-                delta_ms = 0.0
-                if self._prev_chunk_ts is not None:
-                    delta_ms = (now_ts - self._prev_chunk_ts) * 1000.0
-                self._prev_chunk_ts = now_ts
+        print("🎧 Starting audio chunk generator...")
 
-                try:
-                    queue_sz = self._audio_queue.qsize()
-                except Exception:
-                    queue_sz = -1
+        while self._is_recording and not self._restart_stream_event.is_set() and not self._stop_event.is_set():
+            try:
+                # Use a timeout to allow the loop to check for stop/restart events
+                chunk = self._audio_queue.get(timeout=0.1)
+                
+                # Convert float32 to int16 for LINEAR16 encoding
+                if chunk.dtype == np.float32:
+                    chunk = (chunk * 32767).astype(np.int16)
+                
+                yield speech_v2.StreamingRecognizeRequest(audio=chunk.tobytes())
+                
+                # Latency diagnostic
+                current_ts = time.time()
+                if self._prev_chunk_ts:
+                    latency = (current_ts - self._prev_chunk_ts) * 1000
+                    if latency > 200: # If latency is > 200ms
+                         print(f"🕒 High audio chunk latency: {latency:.2f} ms")
+                self._prev_chunk_ts = current_ts
 
-                print(
-                    "📤 STREAM_SEND: chunk_id=%s bytes=%d queue=%d Δt=%.1fms" % (
-                        self._chunk_counter,
-                        len(audio_bytes),
-                        queue_sz,
-                        delta_ms,
-                    )
-                )
-                
-                # 🚨 CRITICAL FIX: Split payload into ≤25 600-byte slices per API limits
-                max_bytes = 25600  # Speech-to-Text V2 limit per StreamingRecognizeRequest
-                for start in range(0, len(audio_bytes), max_bytes):
-                    slice_bytes = audio_bytes[start:start + max_bytes]
-                    yield speech_v2.StreamingRecognizeRequest(audio=slice_bytes)
-                
-                self._chunk_counter += 1
-                
             except queue.Empty:
-                # No audio available, continue
+                # This is normal, just means no audio was available in the last 0.1s
                 continue
             except Exception as e:
                 print(f"❌ Error in audio chunk generator: {e}")
+                self._handle_error("audio_generator_error", e)
                 break
-    
-    def _process_streaming_responses(self) -> None:
-        """🚨 CRITICAL: Process streaming responses from Google Speech API"""
-        try:
-            print("🎧 Starting streaming response processing...")
-            
-            for response in self._streaming_client:
-                if not self._is_recording:
-                    break
-                    
-                # NEW 🔴 Log API-level errors early and continue
-                if hasattr(response, 'error') and response.error.code != 0:
-                    print(
-                        f"❌ STREAMING_ERROR: code={response.error.code} msg={response.error.message} details={response.error.details}"
-                    )
-                    # Raising here would unwind the thread and force a restart; instead, let
-                    # upper-level timeout logic handle restarts so we can log many samples.
-                    continue
+        
+        print("🚪 Audio chunk generator finished.")
 
-                # Process the streaming response
-                try:
-                    self._handle_streaming_response(response)
-                finally:
-                    # 🔍 DEBUG: Log empty or unparsed responses for investigation
-                    if not getattr(response, 'results', None):
-                        print("🔍 STREAMING_DEBUG: empty results in response (event_time: {} error: {})".format(
-                            getattr(response, 'speech_event_type', 'N/A'),
-                            getattr(response, 'error', None)
-                        ))
-                
+
+    def _process_streaming_responses(self) -> None:
+        """
+        Processes responses from the current streaming recognition session.
+        This runs in a dedicated thread per session.
+        """
+        print("🎧 Starting streaming response processing...")
+        if not self._streaming_client:
+            print("⚠️ No streaming client available for response processing.")
+            return
+
+        try:
+            for response in self._streaming_client:
+                self._handle_streaming_response(response)
         except Exception as e:
-            print(f"❌ Streaming response processing error: {e}")
-            # If the error is a GCP idle timeout (409) or any other
-            # streaming abort, mark the stream as inactive so the outer
-            # recognition loop can spin up a fresh session and we lose
-            # minimal audio.
+            # Check if this is an expected "stream closed" error or something else
+            if "RST_STREAM" in str(e) or "channel closed" in str(e):
+                print("🚪 Stream closed normally.")
+            else:
+                self._handle_error("streaming_response_error", e)
+        finally:
             with self._stream_lock:
                 self._stream_active = False
-            if self._error_callback:
-                self._error_callback("streaming_response", e)
-            print("🔄 Stream marked inactive – will be restarted by main loop")
-        finally:
             print("🏁 Streaming response processing finished")
-    
-    def _handle_streaming_response(self, response) -> None:
-        """Handle individual streaming response"""
-        try:
-            if not response.results:
-                return
+
+    def _handle_streaming_response(self, response: speech_v2.StreamingRecognizeResponse) -> None:
+        """Handles a single response from the Speech API."""
+        if not response.results:
+            return
+
+        for result in response.results:
+            if not result.alternatives:
+                continue
             
-            for result in response.results:
-                if not result.alternatives:
-                    continue
-                
-                alternative = result.alternatives[0]
-                transcript_text = alternative.transcript.strip()
-                
-                if not transcript_text:
-                    continue
-                
-                # For MVP: Single speaker mode (no diarization)
-                speaker_id = "Speaker_1"
-                
-                # Create transcript segment
-                segment = TranscriptSegment(
-                    text=transcript_text,
-                    speaker_id=speaker_id,
-                    confidence=alternative.confidence if hasattr(alternative, 'confidence') else 0.9,
-                    timestamp=datetime.now(),
-                    is_final=result.is_final,  # 🚨 CRITICAL: Use actual is_final from streaming
-                    chunk_id=self._chunk_counter,
-                    language_code="en-US"
-                )
-                
-                # Store segment if final
-                if result.is_final:
-                    self._segments.append(segment)
-                
-                # Call transcript callback for both interim and final results
-                if self._transcript_callback:
-                    self._transcript_callback(segment)
-                
-                # Log the result
-                status = "FINAL" if result.is_final else "INTERIM"
+            transcript_text = result.alternatives[0].transcript
+            confidence = result.alternatives[0].confidence
+            
+            # Filter out empty or whitespace-only transcripts
+            if not transcript_text.strip():
+                continue
+
+            # Log raw event for debugging
+            print(f"🎤 Raw STT Event: is_final={result.is_final}, text='{transcript_text}'")
+
+            # Create a structured segment
+            segment = TranscriptSegment(
+                text=transcript_text,
+                speaker_id="speaker_0", # Diarization not implemented in this version
+                confidence=confidence,
+                timestamp=datetime.now(),
+                is_final=result.is_final,
+                chunk_id=self._chunk_counter
+            )
+            
+            # Fire callback and append to internal log
+            if self._transcript_callback:
                 try:
-                    q_sz = self._audio_queue.qsize()
-                except Exception:
-                    q_sz = -1
-                print(
-                    f"🎤 [{status}] {speaker_id}: {transcript_text} (conf: {segment.confidence:.3f}) | queue={q_sz}"
-                )
-                
-        except Exception as e:
-            print(f"❌ Error handling streaming response: {e}")
-    
+                    self._transcript_callback(segment)
+                except Exception as e:
+                    self._handle_error("transcript_callback_error", e)
+
+            # Only add final segments to the persistent transcript log
+            if result.is_final:
+                self._segments.append(segment)
+
     def _should_restart_stream(self) -> bool:
-        """Check if streaming session should be restarted"""
+        """Check if the stream has been active for too long."""
         if not self._stream_start_time:
             return False
-            
-        # Restart every 4 minutes (GCP limit is 5 minutes) *and* only if all
-        # pending audio has been drained – prevents mid-phrase cut-off.
-        if (time.time() - self._stream_start_time) <= self._stream_duration_limit:
-            return False
+        
+        elapsed = time.time() - self._stream_start_time
+        return elapsed > self._stream_duration_limit
 
-        # Defer restart until queue is empty
-        return self._audio_queue.empty()
-    
     def _restart_streaming_session(self) -> None:
-        """Restart the streaming session"""
-        try:
-            print("🔄 Restarting streaming session...")
-            
-            with self._stream_lock:
-                self._stream_active = False
-                
-            # Small delay to ensure cleanup
-            time.sleep(0.1)
-            
-            # Create new session
-            self._create_streaming_session()
-            
-        except Exception as e:
-            print(f"❌ Failed to restart streaming session: {e}")
-            if self._error_callback:
-                self._error_callback("stream_restart", e)
-    
+        """DEPRECATED: This logic is now handled by the main recognition loop."""
+        # This method is kept for backward compatibility but should not be used.
+        # The new design handles this in _start_streaming_recognition.
+        print("⚠️ _restart_streaming_session is deprecated.")
+        self._restart_stream_event.set()
+
+
     def _send_audio_to_stream(self) -> None:
-        """Send any pending audio chunks to the stream"""
-        # This is handled by the _audio_chunk_generator
-        # Just perform health monitoring here
-        self._manage_queue_health()
-        self._log_thread_heartbeat()
+        """DEPRECATED: This logic is now handled by the _audio_chunk_generator."""
+        # This method is kept for backward compatibility but should not be used.
+        pass
 
     def _mock_audio_processing(self) -> None:
         """Mock audio processing for CI environments without audio hardware"""
@@ -818,7 +667,7 @@ class ProductionSTTServiceV2:
             self._audio_stream.start()
 
             self._processing_thread = threading.Thread(
-                target=self._process_audio_chunks,
+                target=self._start_streaming_recognition,
                 daemon=True
             )
             self._processing_thread.start()
@@ -830,7 +679,8 @@ class ProductionSTTServiceV2:
                 "is_recording": True,
                 "sample_rate": self.sample_rate,
                 "chunk_duration": self.chunk_duration,
-                "has_credentials": self._has_credentials
+                "has_credentials": self._has_credentials,
+                "timestamp": datetime.now().isoformat()
             }
         except Exception as e:
             self._is_recording = False
@@ -847,83 +697,62 @@ class ProductionSTTServiceV2:
             }
     
     def stop_recording(self) -> Dict[str, Any]:
+        """Stops the recording and transcription session."""
+        print("🛑 Stopping recording...")
+        
         if not self._is_recording:
-            return {
-                "success": False,
-                "message": "Not currently recording",
-                "is_recording": False
-            }
+            print("⚠️ Recording already stopped.")
+            return {"status": "already_stopped"}
 
-        try:
-            print("⏹️ Stopping recording...")
+        # Signal all loops to stop
+        self._stop_event.set()
+        self._is_recording = False
 
-            # STEP 1: Stop audio stream FIRST to prevent new audio chunks (if audio is available)
-            if AUDIO_AVAILABLE and hasattr(self, '_audio_stream'):
-                try:
-                    self._audio_stream.stop()
-                    self._audio_stream.close()
-                    print("🔇 Audio stream stopped")
-                except Exception as e:
-                    print(f"⚠️ Error stopping audio stream: {e}")
-            elif not AUDIO_AVAILABLE:
-                print("🔇 Mock audio processing stopped")
+        # Stop the audio input stream
+        if AUDIO_AVAILABLE and hasattr(self, '_audio_stream'):
+            try:
+                self._audio_stream.stop()
+                self._audio_stream.close()
+                print("🔇 Audio stream stopped")
+            except Exception as e:
+                print(f"⚠️ Error stopping audio stream: {e}")
+        elif not AUDIO_AVAILABLE:
+            print("🔇 Mock audio processing stopped")
 
-            # STEP 2: Set recording flag to False to stop processing thread
-            self._is_recording = False
-            print("🛑 Recording flag set to False")
+        # Ensure the response thread is also joined if it exists and is alive
+        if hasattr(self, '_response_thread') and self._response_thread and self._response_thread.is_alive():
+             self._response_thread.join(timeout=2.0)
 
-            # STEP 2.5: 🚨 NEW: Gracefully shut down streaming session
-            # Wait until the audio queue is empty AND at least 1.2 s have passed
-            grace_deadline = time.time() + 1.2  # 1200 ms
-            while (not self._audio_queue.empty()) and time.time() < grace_deadline:
-                time.sleep(0.05)
+        # Final cleanup
+        with self._stream_lock:
+            if self._stream_active:
+                print("🔄 Forcing streaming session shutdown after grace period")
+                self._stream_active = False
 
-            # Extra 200 ms to allow the API to flush its final hypothesis
-            time.sleep(0.2)
+        # Wait for processing thread to finish
+        if self._processing_thread and self._processing_thread.is_alive():
+            print("⏳ Waiting for processing thread to terminate...")
+            self._processing_thread.join(timeout=5.0)
+            if self._processing_thread.is_alive():
+                print("⚠️ Processing thread did not terminate in time.")
+        
+        # Clear any remaining audio buffers
+        self._clear_audio_buffers()
 
-            with self._stream_lock:
-                if self._stream_active:
-                    print("🔄 Forcing streaming session shutdown after grace period")
-                    self._stream_active = False
+        session_duration = time.time() - self._session_start_time if self._session_start_time else 0
+        final_transcript = self._generate_final_transcript()
 
-            # STEP 3: Wait for processing thread to finish
-            if self._processing_thread and self._processing_thread.is_alive():
-                print("⏳ Waiting for processing thread to finish...")
-                self._processing_thread.join(timeout=3.0)
-                if self._processing_thread.is_alive():
-                    print("⚠️ Processing thread still alive after timeout")
-                else:
-                    print("✅ Processing thread finished")
-
-            # STEP 4: Clear any remaining audio buffers
-            self._clear_audio_buffers()
-
-            session_duration = time.time() - self._session_start_time if self._session_start_time else 0
-            final_transcript = self._generate_final_transcript()
-
-            print("✅ Recording stopped successfully")
-            return {
-                "success": True,
-                "message": "Recording stopped",
-                "is_recording": False,
-                "session_duration": session_duration,
-                "chunks_processed": self._chunk_counter,
-                "segments_captured": len(self._segments),
-                "speakers_detected": len(self._get_unique_speakers()),
-                "final_transcript": final_transcript
-            }
-        except Exception as e:
-            error_msg = f"Error stopping recording: {e}"
-            print(f"❌ {error_msg}")
-            # TEMPORARILY DISABLED: Error callback to fix async issues
-            # if self._error_callback:
-            #     self._error_callback("stop_recording", e)
-            print(f"⚠️ Stop recording error logged: {e}")
-            return {
-                "success": False,
-                "message": error_msg,
-                "is_recording": False
-            }
+        print("✅ Recording stopped successfully")
+        return {
+            "success": True,
+            "message": "Recording stopped",
+            "is_recording": False,
+            "session_duration": session_duration,
+            "chunks_processed": self._chunk_counter,
+            "segments_captured": len(self._segments),
+            "speakers_detected": len(self._get_unique_speakers()),
+            "final_transcript": final_transcript
+        }
 
     def _clear_audio_buffers(self):
         try:
